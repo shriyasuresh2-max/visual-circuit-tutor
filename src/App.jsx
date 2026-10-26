@@ -1,14 +1,18 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import Header from './components/Header.jsx';
-import ImageUploader from './components/ImageUploader.jsx';
-import CircuitControls from './components/CircuitControls.jsx';
+import LandingPage from './components/LandingPage.jsx';
+import WorkspaceHeader from './components/WorkspaceHeader.jsx';
+import WorkspaceParametersStrip from './components/WorkspaceParametersStrip.jsx';
+import WorkspaceCalculatedStrip from './components/WorkspaceCalculatedStrip.jsx';
 import CircuitDiagram from './components/CircuitDiagram.jsx';
 import StepExplainer from './components/StepExplainer.jsx';
-import MetricsSummary from './components/MetricsSummary.jsx';
+import ReferenceViewer from './components/ReferenceViewer.jsx';
 import { solveOhmSeriesCircuit } from './circuit/circuitEngine.js';
 import './App.css';
 
 export default function App() {
+  // Page Navigation State: 'landing' (Page One) | 'workspace' (Page Two)
+  const [currentView, setCurrentView] = useState('landing');
+
   // Shared Circuit Parameters (defaults: 12 V and 4 Ω)
   const [voltage, setVoltage] = useState(12);
   const [resistance, setResistance] = useState(4);
@@ -16,9 +20,12 @@ export default function App() {
   // Active Explanation Step (0 to 3)
   const [activeStep, setActiveStep] = useState(0);
 
-  // Uploaded Image State (for user reference)
+  // Uploaded Image State (persisted across pages)
   const [imageFile, setImageFile] = useState(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
+
+  // Reference Viewer Drawer State (in workspace)
+  const [isReferenceOpen, setIsReferenceOpen] = useState(false);
 
   // Derive circuit solution using pure engine logic
   const circuitResult = useMemo(() => {
@@ -32,7 +39,13 @@ export default function App() {
     setActiveStep(0);
   };
 
-  // Handle image upload with object URL management
+  // Handle returning to landing page for a new problem
+  const handleNewProblem = () => {
+    setCurrentView('landing');
+    setIsReferenceOpen(false);
+  };
+
+  // Handle image upload and memory cleanup
   const handleImageSelected = (file, previewUrl) => {
     if (imagePreviewUrl) {
       URL.revokeObjectURL(imagePreviewUrl);
@@ -41,15 +54,17 @@ export default function App() {
     setImagePreviewUrl(previewUrl);
   };
 
-  // Handle image removal and cleanup
+  // Handle image removal
   const handleImageRemoved = () => {
     if (imagePreviewUrl) {
       URL.revokeObjectURL(imagePreviewUrl);
     }
     setImageFile(null);
     setImagePreviewUrl(null);
+    setIsReferenceOpen(false);
   };
 
+  // Cleanup object URL on unmount
   useEffect(() => {
     return () => {
       if (imagePreviewUrl) {
@@ -61,9 +76,8 @@ export default function App() {
   // Keyboard navigation for step progression (ArrowLeft / ArrowRight)
   const handleKeyDown = useCallback(
     (e) => {
-      if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) {
-        return;
-      }
+      if (currentView !== 'workspace') return;
+      if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
 
       if (e.key === 'ArrowRight') {
         setActiveStep((prev) => Math.min(prev + 1, (circuitResult.steps?.length || 4) - 1));
@@ -71,7 +85,7 @@ export default function App() {
         setActiveStep((prev) => Math.max(prev - 1, 0));
       }
     },
-    [circuitResult.steps]
+    [currentView, circuitResult.steps]
   );
 
   useEffect(() => {
@@ -80,13 +94,30 @@ export default function App() {
   }, [handleKeyDown]);
 
   return (
-    <div className="tutor-shell">
-      <Header onResetDefaults={handleResetDefaults} />
+    <div className="app-root">
+      {currentView === 'landing' ? (
+        /* PAGE ONE: LANDING AND UPLOAD */
+        <LandingPage
+          imageFile={imageFile}
+          imagePreviewUrl={imagePreviewUrl}
+          onImageSelected={handleImageSelected}
+          onImageRemoved={handleImageRemoved}
+          onContinueToWorkspace={() => setCurrentView('workspace')}
+        />
+      ) : (
+        /* PAGE TWO: CIRCUIT LEARNING WORKSPACE */
+        <div className="workspace-screen">
+          {/* 1. Top Compact Header */}
+          <WorkspaceHeader
+            onNewProblem={handleNewProblem}
+            onResetDefaults={handleResetDefaults}
+            hasReferenceImage={Boolean(imagePreviewUrl)}
+            isReferenceOpen={isReferenceOpen}
+            onToggleReference={() => setIsReferenceOpen((prev) => !prev)}
+          />
 
-      <main className="tutor-workspace">
-        {/* AREA A: Compact Controls & Reference (Sidebar) */}
-        <aside className="workspace-area area-controls" aria-label="Circuit Controls and Reference">
-          <CircuitControls
+          {/* 2. Horizontal Circuit Parameters Strip */}
+          <WorkspaceParametersStrip
             voltage={voltage}
             resistance={resistance}
             onVoltageChange={setVoltage}
@@ -94,35 +125,38 @@ export default function App() {
             error={circuitResult.error}
           />
 
-          <MetricsSummary circuitResult={circuitResult} />
+          {/* 3. Horizontal Calculated Values Strip */}
+          <WorkspaceCalculatedStrip circuitResult={circuitResult} />
 
-          <ImageUploader
+          {/* 4. Main Two-Column Area: Circuit (55-60%) and Explanation (40-45%) Side by Side */}
+          <main className="workspace-main-grid">
+            <section className="circuit-column" aria-label="Circuit Schematic Visualisation">
+              <CircuitDiagram
+                circuitResult={circuitResult}
+                activeStep={activeStep}
+                onSelectStep={setActiveStep}
+              />
+            </section>
+
+            <section className="explanation-column" aria-label="Step-by-Step Educational Explanation">
+              <StepExplainer
+                steps={circuitResult.steps}
+                activeStep={activeStep}
+                onStepChange={setActiveStep}
+                isValid={circuitResult.isValid}
+              />
+            </section>
+          </main>
+
+          {/* Expandable Reference Diagram Drawer */}
+          <ReferenceViewer
+            isOpen={isReferenceOpen}
+            onClose={() => setIsReferenceOpen(false)}
             imageFile={imageFile}
             imagePreviewUrl={imagePreviewUrl}
-            onImageSelected={handleImageSelected}
-            onImageRemoved={handleImageRemoved}
           />
-        </aside>
-
-        {/* AREA B: Circuit Visualisation (Side-by-side with Area C on desktop) */}
-        <section className="workspace-area area-diagram" aria-label="Circuit Visualisation">
-          <CircuitDiagram
-            circuitResult={circuitResult}
-            activeStep={activeStep}
-            onSelectStep={setActiveStep}
-          />
-        </section>
-
-        {/* AREA C: Step-by-Step Explanation (Side-by-side with Area B on desktop) */}
-        <section className="workspace-area area-explainer" aria-label="Step-by-Step Explanation">
-          <StepExplainer
-            steps={circuitResult.steps}
-            activeStep={activeStep}
-            onStepChange={setActiveStep}
-            isValid={circuitResult.isValid}
-          />
-        </section>
-      </main>
+        </div>
+      )}
     </div>
   );
 }

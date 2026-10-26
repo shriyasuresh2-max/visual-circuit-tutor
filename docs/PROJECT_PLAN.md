@@ -24,21 +24,18 @@ Visual Circuit Tutor is an interactive educational tool designed to help enginee
 
 ## 3. Milestones & Roadmap
 
-### Milestone 1: Single-Loop DC Circuit (Completed)
+### Milestone 1: Single-Loop DC Circuit & Dedicated Website Flow (Completed)
 - [x] Pure calculation engine implementing Ohm's Law ($I = \frac{V}{R}$) and Power ($P = V \times I$).
 - [x] Input validation for zero resistance ($R = 0 \implies \text{short circuit}$), negative resistance, and non-numeric inputs.
 - [x] Automated unit test suite with 9 test cases in Vitest.
-- [x] Vector SVG schematic with ideal DC battery, ANSI zigzag resistor, and conventional current flow.
-- [x] 4-step progressive explanation:
-  - Step 1: Identify Voltage Source ($V$)
-  - Step 2: Identify Circuit Resistance ($R$)
-  - Step 3: Select and Apply Ohm's Law ($I = \frac{V}{R}$)
-  - Step 4: Calculate and Interpret Current ($I$) and Power ($P$)
-- [x] Synchronized component highlighting in SVG (active component focus).
+- [x] Dedicated Page One: Landing and problem upload with preview, replace, and sample circuit action.
+- [x] Dedicated Page Two: Circuit Learning Workspace with horizontal parameter & calculated value strips.
+- [x] Side-by-side desktop layout: Vector SVG schematic ($\approx 58\%$) and Step Explainer ($\approx 42\%$).
+- [x] 5-point pedagogical explanation framework answering what we find, law used, engineering rationale, value substitution, and physical meaning.
+- [x] Vector SVG schematic with ideal DC battery, ANSI zigzag resistor, conventional current flow, and step-synchronized highlighting.
 - [x] Interactive click-to-step navigation on schematic components.
 - [x] Keyboard arrow navigation ($\leftarrow$ / $\rightarrow$).
-- [x] 3-area desktop workspace: Controls (Left), Schematic (Center), Explainer (Right).
-- [x] Textbook diagram upload and preview with sample problem loader.
+- [x] Expandable reference image drawer for uploaded textbook problems.
 
 ### Milestone 2: Series & Parallel Resistor Networks (Upcoming)
 - [ ] Multiple resistors in series ($R_{eq} = R_1 + R_2 + \dots$).

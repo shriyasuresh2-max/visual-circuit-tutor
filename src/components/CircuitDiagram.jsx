@@ -17,28 +17,18 @@ export default function CircuitDiagram({
   const { formatted, isValid, current } = circuitResult;
   const isCurrentFlowing = isValid && current !== null && current !== 0;
 
+  // Step Highlights
   const isSourceActive = activeStep === 0;
-  const isResistorActive = activeStep === 1;
+  const isResistorActive = activeStep === 1 || activeStep === 3;
+  const isCurrentActive = activeStep === 2;
   const isLoopActive = activeStep === 2;
-  const isCurrentActive = activeStep === 3;
+  const isPowerActive = activeStep === 3;
 
   return (
     <div className="panel-card diagram-panel">
       <div className="panel-header diagram-panel-header">
         <h2 className="panel-title">Circuit Schematic</h2>
-        <div className="diagram-status-row">
-          <span className={`status-item ${isSourceActive ? 'item-active text-voltage' : ''}`}>
-            V = {formatted.voltage}
-          </span>
-          <span className="status-divider">•</span>
-          <span className={`status-item ${isResistorActive ? 'item-active text-resistance' : ''}`}>
-            R = {formatted.resistance}
-          </span>
-          <span className="status-divider">•</span>
-          <span className={`status-item ${isCurrentActive ? 'item-active text-current' : ''}`}>
-            I = {isValid ? formatted.current : '—'}
-          </span>
-        </div>
+        <span className="diagram-caption-hint">Click any component to focus step</span>
       </div>
 
       <div className="diagram-viewport">
@@ -214,15 +204,15 @@ export default function CircuitDiagram({
             </g>
           </g>
 
-          {/* 2. RESISTOR COMPONENT (Right Branch) */}
+          {/* 2. RESISTOR COMPONENT (Right Branch) — Highlighted in Step 2 (Resistance) & Step 4 (Power Heat Dissipation) */}
           <g
             id="comp-resistor"
             className={`interactive-component ${isResistorActive ? 'comp-focused' : ''}`}
-            onClick={() => onSelectStep(1)}
+            onClick={() => onSelectStep(activeStep < 2 ? 1 : (activeStep === 3 ? 1 : 3))}
             style={{ cursor: 'pointer' }}
             tabIndex={0}
             role="button"
-            aria-label={`Resistor: ${formatted.resistance}. Select Step 2.`}
+            aria-label={isPowerActive ? `Power dissipation in resistor: ${formatted.power}` : `Resistor: ${formatted.resistance}`}
           >
             {/* Component bounding indicator when active */}
             {isResistorActive && (
@@ -232,8 +222,8 @@ export default function CircuitDiagram({
                 width="96"
                 height="124"
                 rx="6"
-                fill="rgba(245, 158, 11, 0.05)"
-                stroke="#f59e0b"
+                fill={isPowerActive ? 'rgba(249, 115, 22, 0.08)' : 'rgba(245, 158, 11, 0.05)'}
+                stroke={isPowerActive ? '#f97316' : '#f59e0b'}
                 strokeWidth="1.5"
                 strokeDasharray="3 3"
               />
@@ -252,7 +242,7 @@ export default function CircuitDiagram({
                 420,230
               "
               fill="none"
-              stroke={isResistorActive ? '#f59e0b' : '#d97706'}
+              stroke={isPowerActive ? '#f97316' : isResistorActive ? '#f59e0b' : '#d97706'}
               strokeWidth="3"
               strokeLinejoin="round"
               strokeLinecap="round"
@@ -267,21 +257,39 @@ export default function CircuitDiagram({
                 height="32"
                 rx="4"
                 fill="#111827"
-                stroke={isResistorActive ? '#f59e0b' : '#2d3748'}
+                stroke={isPowerActive ? '#f97316' : isResistorActive ? '#f59e0b' : '#2d3748'}
                 strokeWidth="1.2"
               />
-              <text x="32" y="14" fill="#64748b" fontSize="9" fontWeight="600" textAnchor="middle" fontFamily="var(--font-sans)">LOAD (R)</text>
-              <text x="32" y="26" fill={isResistorActive ? '#f59e0b' : '#e2e8f0'} fontSize="11" fontWeight="700" textAnchor="middle" fontFamily="var(--font-mono)">
-                {formatted.resistance}
+              <text
+                x="32"
+                y="14"
+                fill={isPowerActive ? '#f97316' : '#64748b'}
+                fontSize="9"
+                fontWeight="600"
+                textAnchor="middle"
+                fontFamily="var(--font-sans)"
+              >
+                {isPowerActive ? 'HEAT (P)' : 'LOAD (R)'}
+              </text>
+              <text
+                x="32"
+                y="26"
+                fill={isPowerActive ? '#f97316' : isResistorActive ? '#f59e0b' : '#e2e8f0'}
+                fontSize="11"
+                fontWeight="700"
+                textAnchor="middle"
+                fontFamily="var(--font-mono)"
+              >
+                {isPowerActive ? (isValid ? formatted.power : '—') : formatted.resistance}
               </text>
             </g>
           </g>
 
-          {/* 3. CURRENT FLOW INDICATORS & ARROWS (Step 4 Highlight) */}
+          {/* 3. CURRENT FLOW INDICATORS & ARROWS (Step 3 Highlight) */}
           <g
             id="comp-current"
             className={`interactive-component ${isCurrentActive ? 'comp-focused' : ''}`}
-            onClick={() => onSelectStep(3)}
+            onClick={() => onSelectStep(2)}
             style={{ cursor: 'pointer' }}
           >
             {/* Top Wire Arrow (Left to Right) */}
@@ -366,10 +374,6 @@ export default function CircuitDiagram({
           <circle cx="420" cy="290" r="3.5" fill="#475569" />
           <circle cx="120" cy="290" r="3.5" fill="#475569" />
         </svg>
-      </div>
-
-      <div className="diagram-caption-bar">
-        <span>Click any component in the schematic to jump directly to its explanation step.</span>
       </div>
     </div>
   );

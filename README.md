@@ -1,21 +1,32 @@
 # Visual Circuit Tutor
 
-An interactive educational engineering tool designed to teach electrical circuit analysis visually through synchronized vector schematics and step-by-step reasoning. Inspired by the educational philosophy of [VisuAlgo](https://visualgo.net/).
+An interactive educational website designed to teach electrical circuit analysis visually through synchronized vector schematics and step-by-step reasoning. Inspired by the educational philosophy of [VisuAlgo](https://visualgo.net/).
 
 ---
 
-## Current Functionality
+## User Flow & Core Features
 
-- **Side-by-Side Educational Workspace:** A 3-area desktop layout placing the circuit schematic and active step-by-step reasoning side by side without vertical scrolling:
-  - **Area A (Left Sidebar):** Circuit parameters ($V$ and $R$ inputs/sliders), calculated values readout ($V, R, I, P$), and textbook diagram image uploader.
-  - **Area B (Center):** Vector SVG schematic with ideal DC battery, ANSI zigzag resistor, conventional current arrows, and synchronized component highlighting.
-  - **Area C (Right):** Stepper card presenting 4 progressive reasoning steps, mathematical formula display, conceptual explanation, and Python code reference.
-- **Ohm's Law Calculation Engine:** Fully decoupled pure calculation module in `src/circuit/circuitEngine.js` calculating $I = \frac{V}{R}$ and power $P = V \times I$.
-- **Circuit Validation & Edge Cases:** Flags short circuits ($R = 0\ \Omega \implies I \to \infty$), rejects negative resistances, and safely handles invalid numeric inputs.
-- **Interactive Component Selection:** Clicking on the battery, resistor, loop, or current arrow in the SVG schematic immediately focuses that explanation step.
-- **Keyboard Navigation:** Use $\leftarrow$ and $\rightarrow$ arrow keys to step through the lesson.
-- **Textbook Image Reference:** Upload PNG, JPG, or WebP diagrams with instant local preview, file size reporting, and replacement/removal controls.
-- **Automated Tests:** 9 unit tests with Vitest verifying calculations, formatting, edge cases, and string inputs.
+### 1. Page One — Landing & Problem Upload
+- **Focused Landing Experience:** Generous whitespace, clean typography, and a prominent headline: *"Understand circuits, one step at a time."*
+- **Central Upload Zone:** Drag-and-drop or browse files (supports PNG, JPG, and WebP).
+- **Instant Preview & Actions:** Selected image preview with file details, "Replace image", and a primary **"Continue to workspace"** button.
+- **Sample Circuit Option:** A secondary **"Try a sample circuit"** action that preloads an ideal DC series problem for instant testing.
+- **Honest Limitation Note:** Clearly informs learners that image recognition is in active development; uploaded diagrams serve as visual references alongside the interactive solver.
+
+### 2. Page Two — Circuit Learning Workspace
+- **Compact Workspace Header:** Unobtrusive top bar featuring the product name, topic indicator, **"Reference Image"** drawer toggle, **"Reset Circuit"** button, and **"New Problem"** action to return to upload.
+- **Horizontal Circuit Parameters Strip:** Voltage ($V$) and Resistance ($R$) inputs and range sliders arranged horizontally with compact bounds and inline short-circuit validation.
+- **Horizontal Calculated Values Strip:** Compact row presenting Voltage ($12\text{ V}$), Resistance ($4\ \Omega$), Current ($I = 3\text{ A}$), and Power ($P = 36\text{ W}$) without oversized dashboard cards.
+- **Side-by-Side Learning Area (Desktop):**
+  - **Circuit Schematic ($\approx 58\%$ width):** Vector SVG diagram with battery symbol, polarity, ANSI zigzag resistor, conventional current arrows, dynamic step highlights, and click-to-step component navigation.
+  - **Step-by-Step Explanation ($\approx 42\%$ width):** A 5-point structured educational breakdown:
+    1. *What are we finding?* (Clear objective)
+    2. *Which law or formula are we using?* (Physics principle)
+    3. *Why is that formula appropriate?* (Engineering rationale)
+    4. *How do we substitute values?* (Mathematical substitution)
+    5. *What does the result mean physically?* (Current direction & energy conversion)
+    - Includes Python reference code (`circuit_calculator.py`) and keyboard navigation ($\leftarrow$ / $\rightarrow$).
+- **Expandable Reference Drawer:** View the uploaded textbook problem diagram without disrupting the side-by-side workspace.
 
 ---
 
@@ -35,18 +46,21 @@ visual-circuit-tutor/
 └── src/
     ├── main.jsx                         # React root entry point
     ├── index.css                        # Design tokens & base styles
-    ├── App.jsx                          # Main workspace orchestrator
-    ├── App.css                          # 3-area desktop grid & responsive styles
+    ├── App.jsx                          # Main state orchestrator & page routing
+    ├── App.css                          # Landing & workspace styles
     ├── circuit/
     │   ├── circuitEngine.js             # Pure Ohm's law & series circuit solver
-    │   └── circuitEngine.test.js        # Vitest automated test suite
+    │   └── circuitEngine.test.js        # Vitest automated test suite (9 tests)
+    ├── utils/
+    │   └── sampleCircuit.js             # Sample textbook problem SVG generator
     └── components/
-        ├── Header.jsx                   # Minimal app header bar with reset button
-        ├── CircuitControls.jsx          # Voltage & Resistance inputs with validation
-        ├── MetricsSummary.jsx           # Compact readout tiles (V, R, I, P)
-        ├── ImageUploader.jsx            # Textbook reference upload & preview
-        ├── CircuitDiagram.jsx           # Technical SVG schematic & step highlights
-        └── StepExplainer.jsx            # Stepper card with math & Python bridge
+        ├── LandingPage.jsx              # Page One: Dedicated landing & upload
+        ├── WorkspaceHeader.jsx          # Page Two: Header with New Problem & Reset
+        ├── WorkspaceParametersStrip.jsx # Page Two: Horizontal parameters toolbar
+        ├── WorkspaceCalculatedStrip.jsx # Page Two: Horizontal calculated values strip
+        ├── CircuitDiagram.jsx           # Technical SVG schematic with step focus
+        ├── StepExplainer.jsx            # 5-point pedagogical explanation panel
+        └── ReferenceViewer.jsx          # Expandable reference image drawer
 ```
 
 ---
@@ -66,13 +80,13 @@ npm install
 ```bash
 npm run dev
 ```
-Open `http://localhost:5173` in your web browser.
+Open `http://localhost:5173` in your browser.
 
-### Running Unit Tests
+### Running Automated Tests
 ```bash
 npm test
 ```
-To run tests in interactive watch mode:
+To run tests in watch mode:
 ```bash
 npm run test:watch
 ```
@@ -86,5 +100,5 @@ npm run build
 
 ## Current Scope & Limitations
 
-- **Single Series Circuit:** Currently models a single-loop closed DC circuit with one ideal voltage source and one resistor. Parallel branches, multiple loops, capacitors, and inductors are planned for future milestones.
-- **Image Upload:** Uploaded circuit diagrams are rendered locally for human visual reference. Automated optical diagram extraction (using computer vision or multimodal AI) is reserved for a future milestone.
+- **Ideal DC Series Circuit:** Milestone 1 models a single closed loop with one ideal DC voltage source and one resistor. Multi-resistor series/parallel networks and Kirchhoff's laws are planned for subsequent milestones.
+- **Image Recognition Status:** Uploaded diagrams are currently rendered as a reference image for the user. Automated optical diagram recognition (OCR + computer vision netlist extraction) is planned for a future milestone.

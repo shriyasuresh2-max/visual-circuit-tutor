@@ -5,7 +5,7 @@
  * It encapsulates Ohm's Law and circuit analysis logic with comprehensive validation.
  * 
  * Formulas:
- *   Ohm's Law:    I = V / R
+ *   Ohm's Law:      I = V / R
  *   Electric Power: P = V * I = I^2 * R
  */
 
@@ -65,8 +65,13 @@ export function validateCircuitInputs(voltage, resistance) {
 }
 
 /**
- * Calculates current, power, and step-by-step educational explanations
+ * Calculates current, power, and structured step-by-step educational explanations
  * for a closed single-loop DC circuit.
+ * 
+ * Each step provides a streamlined 3-part pedagogical sequence:
+ *   Part A — What Are We Finding?
+ *   Part B — Work It Out (Stage 1: Formula, Stage 2: Substitute Known Values, Stage 3: Calculate Answer)
+ *   Part C — What This Means
  * 
  * @param {Object} params
  * @param {number|string} params.voltage - Voltage in Volts
@@ -116,53 +121,103 @@ export function solveOhmSeriesCircuit({ voltage = 12, resistance = 4 } = {}) {
   const formattedI = `${formatNumber(current)} A`;
   const formattedP = `${formatNumber(power)} W`;
 
-  // Step-by-step synchronized educational breakdown
+  // Step-by-step streamlined educational breakdown
   const steps = [
     {
       stepIndex: 0,
       stepNumber: 1,
       id: 'identify-source',
       highlightTarget: 'source',
-      title: 'Step 1: Identify the Voltage Source',
-      subtitle: 'Locate the energy provider in the schematic',
+      title: 'Identify the Voltage Source',
+      subtitle: 'Energy source driving charge through the circuit',
+      partA: 'Identify the voltage supplied by the battery.',
+      partB: {
+        stage1Title: 'Stage 1: Formula',
+        stage1Formula: 'V',
+        stage1Note: 'The battery provides an independent DC electrical potential difference.',
+        stage2Title: 'Stage 2: Identify from schematic',
+        stage2Formula: `V = ${formattedV}`,
+        stage2Note: `From the circuit schematic, the voltage source supplies ${formattedV}.`,
+        stage3Title: 'Stage 3: Result',
+        stage3Formula: `V = ${formattedV}`,
+        stage3Note: 'Known potential difference driving the loop.'
+      },
+      partC: `The battery provides ${formattedV} of electrical potential difference across the circuit.`,
       mathEquation: `V = ${formattedV}`,
-      explanation: `The circuit is driven by an ideal DC voltage source providing a constant electrical potential difference of ${formattedV}. This voltage acts as the "electrical pressure" pushing charge carriers through the loop.`,
-      keyTakeaway: `In Python terms: voltage = ${numV}`
+      mathText: `V = ${formattedV}`,
+      explanation: `The battery provides ${formattedV} of electrical potential difference across the circuit.`
     },
     {
       stepIndex: 1,
       stepNumber: 2,
       id: 'identify-resistor',
       highlightTarget: 'resistor',
-      title: 'Step 2: Identify the Circuit Resistance',
-      subtitle: 'Locate the passive load opposing current flow',
+      title: 'Identify Circuit Resistance',
+      subtitle: 'Passive load opposing the flow of electric current',
+      partA: 'Determine the resistance opposing the current.',
+      partB: {
+        stage1Title: 'Stage 1: Formula',
+        stage1Formula: 'R',
+        stage1Note: 'Resistance represents the opposition to the flow of electric charge.',
+        stage2Title: 'Stage 2: Identify from schematic',
+        stage2Formula: `R = ${formattedR}`,
+        stage2Note: `The single series resistor has a value of ${formattedR} (connecting wires have 0 Ω ideal resistance).`,
+        stage3Title: 'Stage 3: Result',
+        stage3Formula: `R = ${formattedR}`,
+        stage3Note: 'Total load resistance in the closed loop.'
+      },
+      partC: `The ${formattedR} resistor limits the current flowing through the loop.`,
       mathEquation: `R = ${formattedR}`,
-      explanation: `The closed loop contains a single resistive component with an opposition to current of ${formattedR}. The connecting wires are assumed to have 0 Ω resistance (ideal conductors).`,
-      keyTakeaway: `In Python terms: resistance = ${numR}`
+      mathText: `R = ${formattedR}`,
+      explanation: `The ${formattedR} resistor limits the current flowing through the loop.`
     },
     {
       stepIndex: 2,
       stepNumber: 3,
-      id: 'apply-ohms-law',
-      highlightTarget: 'loop',
-      title: "Step 3: Select and Apply Ohm's Law",
-      subtitle: 'Relate Voltage, Current, and Resistance',
-      mathEquation: `I = \\frac{V}{R} = \\frac{${formattedV}}{${formattedR}}`,
-      mathText: `I = V / R = ${formattedV} / ${formattedR}`,
-      explanation: `Ohm's Law states that current (I) is directly proportional to voltage (V) and inversely proportional to resistance (R). Because this is a single closed series loop, the exact same current flows continuously through every point.`,
-      keyTakeaway: `In Python terms: current = voltage / resistance`
+      id: 'calculate-current',
+      highlightTarget: 'current',
+      title: 'Calculate the Current',
+      subtitle: "Relate voltage, resistance, and current with Ohm's law",
+      partA: 'Find how much current flows through the circuit.',
+      partB: {
+        stage1Title: 'Stage 1: Formula',
+        stage1Formula: 'I = V / R',
+        stage1Note: "Ohm's law relates current, voltage, and resistance in a closed loop.",
+        stage2Title: 'Stage 2: Substitute the known values',
+        stage2Formula: `I = ${numV} / ${numR}`,
+        stage2Note: `${formattedV} is the supplied voltage and ${formattedR} is the resistance.`,
+        stage3Title: 'Stage 3: Calculate the answer',
+        stage3Formula: `I = ${formattedI}`,
+        stage3Note: `Dividing ${numV} by ${numR} yields a total current of ${formattedI}.`
+      },
+      partC: `A current of ${formattedI} flows around the closed circuit.`,
+      mathEquation: `I = \\frac{V}{R} = \\frac{${formattedV}}{${formattedR}} = ${formattedI}`,
+      mathText: `I = V / R = ${formattedV} / ${formattedR} = ${formattedI}`,
+      explanation: `A current of ${formattedI} flows around the closed circuit.`
     },
     {
       stepIndex: 3,
       stepNumber: 4,
-      id: 'interpret-current',
-      highlightTarget: 'current',
-      title: 'Step 4: Calculate and Interpret the Current',
-      subtitle: 'Determine magnitude, direction, and power dissipation',
-      mathEquation: `I = ${formattedI} \\quad \\text{and} \\quad P = V \\times I = ${formattedP}`,
-      mathText: `I = ${formattedI}  |  P = ${formattedP}`,
-      explanation: `Dividing ${formattedV} by ${formattedR} yields a total current of ${formattedI}. Conventional current flows out of the positive battery terminal (+), travels clockwise through the resistor, and returns to the negative terminal (-). The resistor dissipates ${formattedP} of electrical energy as heat.`,
-      keyTakeaway: `print("Current", current, "A") → ${formattedI}`
+      id: 'calculate-power',
+      highlightTarget: 'power',
+      title: 'Calculate Power Dissipation',
+      subtitle: 'Determine rate of electrical energy converted into heat',
+      partA: 'Calculate how much electrical power the resistor dissipates.',
+      partB: {
+        stage1Title: 'Stage 1: Formula',
+        stage1Formula: 'P = V × I',
+        stage1Note: "Joule's law determines the rate at which electrical energy is converted into heat.",
+        stage2Title: 'Stage 2: Substitute the known values',
+        stage2Formula: `P = ${numV} × ${formatNumber(current)}`,
+        stage2Note: `${formattedV} is the voltage across the resistor and ${formattedI} is the circuit current.`,
+        stage3Title: 'Stage 3: Calculate the answer',
+        stage3Formula: `P = ${formattedP}`,
+        stage3Note: `Multiplying ${numV} by ${formatNumber(current)} yields ${formattedP} of power.`
+      },
+      partC: `The resistor converts ${formatNumber(power)} joules of electrical energy into heat every second.`,
+      mathEquation: `P = V \\times I = ${formattedV} \\times ${formattedI} = ${formattedP}`,
+      mathText: `P = V * I = ${formattedV} * ${formattedI} = ${formattedP}`,
+      explanation: `The resistor converts ${formatNumber(power)} joules of electrical energy into heat every second.`
     }
   ];
 

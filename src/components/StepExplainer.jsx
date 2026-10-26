@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronLeft, ChevronRight, Check } from 'lucide-react';
+import { ArrowLeft, ArrowRight } from 'lucide-react';
 
 export default function StepExplainer({
   steps,
@@ -9,11 +9,11 @@ export default function StepExplainer({
 }) {
   if (!isValid || !steps || steps.length === 0) {
     return (
-      <div className="panel-card explainer-panel panel-disabled">
-        <div className="empty-state-notice">
-          <h3 className="empty-title">Calculations Paused</h3>
+      <div className="explainer-card card-disabled">
+        <div className="explainer-empty-notice">
+          <h3 className="empty-title">Circuit Calculation Paused</h3>
           <p className="empty-desc">
-            Correct circuit parameters in the controls panel to resume step-by-step analysis.
+            Please resolve the parameter errors in the top controls to resume step-by-step circuit analysis.
           </p>
         </div>
       </div>
@@ -37,88 +37,110 @@ export default function StepExplainer({
     }
   };
 
+  const { partA, partB, partC } = currentStep;
+
   return (
-    <div className="panel-card explainer-panel">
-      {/* Stepper Navigation Header */}
-      <div className="panel-header explainer-header">
-        <div className="step-counter-label">
-          <span>Step {currentStep.stepNumber} of {totalSteps}</span>
-        </div>
-
-        {/* Step Selector Pills */}
-        <div className="step-tabs" role="tablist">
-          {steps.map((step, idx) => {
-            const isActive = idx === activeStep;
-            const isCompleted = idx < activeStep;
-            return (
-              <button
-                key={step.id}
-                role="tab"
-                aria-selected={isActive}
-                className={`step-tab-btn ${isActive ? 'tab-active' : ''} ${isCompleted ? 'tab-done' : ''}`}
-                onClick={() => onStepChange(idx)}
-                title={`Jump to ${step.title}`}
-              >
-                {isCompleted ? <Check size={11} className="tab-check-icon" /> : null}
-                <span>Step {idx + 1}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Main Step Content Body */}
-      <div className="explainer-scroll-body">
-        <div className="step-heading-group">
-          <h3 className="step-title">{currentStep.title}</h3>
-          <p className="step-sub">{currentStep.subtitle}</p>
-        </div>
-
-        {/* Formula / Math Block */}
-        <div className="math-display-card">
-          <span className="math-card-label">Formula / Value</span>
-          <div className="math-code-value">
-            <code>{currentStep.mathText || currentStep.mathEquation}</code>
-          </div>
-        </div>
-
-        {/* Conceptual Reasoning */}
-        <div className="explanation-prose">
-          <p>{currentStep.explanation}</p>
-        </div>
-
-        {/* Python Reference */}
-        <div className="python-reference-card">
-          <span className="python-card-label">Python Reference (circuit_calculator.py)</span>
-          <code className="python-inline-code">{currentStep.keyTakeaway}</code>
-        </div>
-      </div>
-
-      {/* Stepper Controls Footer */}
-      <div className="explainer-nav-footer">
+    <div className="explainer-card" aria-label="Step-by-step circuit explanation">
+      {/* 
+        Arrow Navigation Bar:
+        ← Previous       Step X of 4       Next →
+        "Next" is displayed on EVERY step (including final step, where it is disabled)
+      */}
+      <div className="explainer-nav-bar">
         <button
           type="button"
           onClick={handlePrev}
           disabled={isFirst}
-          className="btn-step-nav btn-step-prev"
+          className="btn-step-arrow btn-step-arrow-prev"
+          aria-label="Previous step"
+          title={isFirst ? 'First step' : 'Previous step (← key)'}
         >
-          <ChevronLeft size={16} />
+          <ArrowLeft size={15} />
           <span>Previous</span>
         </button>
 
-        <span className="nav-keyboard-hint">
-          Keys: <kbd>←</kbd> <kbd>→</kbd>
-        </span>
+        <div className="step-indicator-group">
+          <span className="step-indicator-text">
+            Step {currentStep.stepNumber} of {totalSteps}
+          </span>
+          <span className="step-keyboard-pill" title="You can also use the Left and Right arrow keys on your keyboard">
+            <kbd>←</kbd> <kbd>→</kbd>
+          </span>
+        </div>
 
         <button
           type="button"
           onClick={handleNext}
           disabled={isLast}
-          className="btn-step-nav btn-step-next"
+          className="btn-step-arrow btn-step-arrow-next"
+          aria-label="Next step"
+          title={isLast ? 'Final step reached' : 'Next step (→ key)'}
         >
-          <span>{isLast ? 'Completed' : 'Next Step'}</span>
-          <ChevronRight size={16} />
+          <span>Next</span>
+          <ArrowRight size={15} />
         </button>
+      </div>
+
+      {/* Main Educational Explanation Body: 3 Clear Parts */}
+      <div className="explainer-body">
+        {/* Step Title Header */}
+        <div className="step-header-block">
+          <h2 className="step-main-heading">{currentStep.title}</h2>
+        </div>
+
+        {/* Part A — What Are We Finding? */}
+        <div className="explanation-section section-part-a">
+          <h3 className="section-heading">Part A — What Are We Finding?</h3>
+          <p className="part-a-text">{partA}</p>
+        </div>
+
+        {/* Part B — Work It Out */}
+        <div className="explanation-section section-part-b">
+          <h3 className="section-heading">Part B — Work It Out</h3>
+          <div className="calculation-sequence">
+            {/* Stage 1: Formula */}
+            <div className="calc-stage">
+              <div className="stage-title-row">
+                <span className="stage-badge">Stage 1</span>
+                <span className="stage-name">{partB.stage1Title.replace(/^Stage 1:\s*/, '')}</span>
+              </div>
+              <div className="stage-math-box">
+                <code>{partB.stage1Formula}</code>
+              </div>
+              {partB.stage1Note && <p className="stage-desc">{partB.stage1Note}</p>}
+            </div>
+
+            {/* Stage 2: Substitute the known values */}
+            <div className="calc-stage">
+              <div className="stage-title-row">
+                <span className="stage-badge">Stage 2</span>
+                <span className="stage-name">{partB.stage2Title.replace(/^Stage 2:\s*/, '')}</span>
+              </div>
+              <div className="stage-math-box">
+                <code>{partB.stage2Formula}</code>
+              </div>
+              {partB.stage2Note && <p className="stage-desc">{partB.stage2Note}</p>}
+            </div>
+
+            {/* Stage 3: Calculate the answer */}
+            <div className="calc-stage stage-final-answer">
+              <div className="stage-title-row">
+                <span className="stage-badge stage-badge-result">Stage 3</span>
+                <span className="stage-name">{partB.stage3Title.replace(/^Stage 3:\s*/, '')}</span>
+              </div>
+              <div className="stage-math-box answer-highlight-box">
+                <code>{partB.stage3Formula}</code>
+              </div>
+              {partB.stage3Note && <p className="stage-desc">{partB.stage3Note}</p>}
+            </div>
+          </div>
+        </div>
+
+        {/* Part C — What This Means */}
+        <div className="explanation-section section-part-c">
+          <h3 className="section-heading">Part C — What This Means</h3>
+          <p className="part-c-text">{partC}</p>
+        </div>
       </div>
     </div>
   );

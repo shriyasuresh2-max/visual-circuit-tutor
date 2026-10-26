@@ -1,13 +1,343 @@
-/* App Container & Header */
-.tutor-shell {
+/* =========================================================================
+   VISUAL CIRCUIT TUTOR — COMPLETE WEBSITE REDESIGN
+   ========================================================================= */
+
+.app-root {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
   background-color: var(--bg-app);
 }
 
-.app-header {
+/* =========================================================================
+   PAGE ONE: LANDING AND UPLOAD
+   ========================================================================= */
+
+.landing-page-container {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-app);
+}
+
+.landing-header {
+  height: 56px;
+  padding: 0 2rem;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--bg-surface);
+}
+
+.landing-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.brand-logo-symbol {
+  font-size: 1.15rem;
+  color: var(--accent-voltage);
+}
+
+.brand-name {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.landing-main-content {
+  flex: 1;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 3.5rem 1.5rem 2.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.landing-hero-copy {
+  text-align: center;
+  margin-bottom: 2.25rem;
+}
+
+.landing-title {
+  font-size: 2.25rem;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+  color: var(--text-primary);
+  margin-bottom: 0.75rem;
+}
+
+.landing-subtitle {
+  font-size: 1.05rem;
+  color: var(--text-secondary);
+  max-width: 580px;
+  margin: 0 auto;
+  line-height: 1.55;
+}
+
+.central-upload-container {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+/* Landing Dropzone */
+.landing-dropzone {
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 3rem 2rem;
+  background-color: var(--bg-surface);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.landing-dropzone:hover,
+.landing-dropzone.dropzone-active {
+  border-color: var(--accent-voltage);
+  background-color: var(--accent-voltage-dim);
+}
+
+.dropzone-icon-wrap {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+
+.dropzone-upload-icon {
+  color: var(--accent-voltage);
+}
+
+.dropzone-main-text {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 0.35rem;
+}
+
+.dropzone-sub-text {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+}
+
+.dropzone-badge-formats {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  background-color: var(--bg-input);
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+  margin-bottom: 1.25rem;
+}
+
+.btn-browse-files {
+  background-color: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.45rem 1.1rem;
+  border-radius: var(--radius-sm);
+  transition: all 0.15s;
+}
+
+.btn-browse-files:hover {
+  background-color: #243048;
+  border-color: var(--accent-voltage);
+}
+
+/* Upload Preview Card (When Image Selected) */
+.upload-preview-card {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  box-shadow: var(--shadow-panel);
+}
+
+.preview-image-box {
+  width: 100%;
+  max-height: 280px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background-color: #000;
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.selected-preview-img {
+  max-width: 100%;
+  max-height: 280px;
+  object-fit: contain;
+}
+
+.preview-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.preview-file-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.preview-file-size {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.btn-replace-image {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-input);
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--radius-xs);
+  transition: all 0.15s;
+}
+
+.btn-replace-image:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.landing-action-buttons {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-continue-workspace {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background-color: #2563eb;
+  color: #ffffff;
+  border: 1px solid #1d4ed8;
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 0.65rem 1.4rem;
+  border-radius: var(--radius-sm);
+  transition: background-color 0.15s;
+}
+
+.btn-continue-workspace:hover {
+  background-color: #1d4ed8;
+}
+
+/* Secondary Actions */
+.landing-secondary-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.85rem;
+  padding-top: 0.5rem;
+}
+
+.secondary-divider-text {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.btn-try-sample {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--accent-voltage);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-surface);
+  padding: 0.35rem 0.8rem;
+  border-radius: var(--radius-sm);
+  transition: all 0.15s;
+}
+
+.btn-try-sample:hover {
+  background-color: var(--accent-voltage-dim);
+  border-color: var(--accent-voltage);
+}
+
+.landing-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background-color: var(--accent-danger-dim);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+  font-size: 0.82rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-sm);
+}
+
+.landing-limitation-notice {
+  background-color: rgba(18, 24, 36, 0.7);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 1rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.landing-limitation-notice strong {
+  color: var(--text-secondary);
+}
+
+.landing-footer {
   height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* =========================================================================
+   PAGE TWO: CIRCUIT LEARNING WORKSPACE
+   ========================================================================= */
+
+.workspace-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-app);
+}
+
+/* 1. Compact Workspace Header */
+.workspace-header {
+  height: 46px;
   padding: 0 1.25rem;
   display: flex;
   align-items: center;
@@ -17,248 +347,153 @@
   flex-shrink: 0;
 }
 
-.header-brand {
+.workspace-brand-col {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: 0.65rem;
 }
 
-.header-title {
-  font-size: 1.05rem;
+.workspace-brand-title {
+  font-size: 1rem;
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.01em;
 }
 
-.header-separator {
-  color: var(--border-strong);
-  font-weight: 300;
+.workspace-topic-tag {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  border-left: 1px solid var(--border-strong);
+  padding-left: 0.65rem;
 }
 
-.header-topic {
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-}
-
-.btn-header-reset {
+.workspace-actions-col {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.78rem;
+  gap: 0.5rem;
+}
+
+.btn-workspace-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.76rem;
+  font-weight: 600;
   color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
   background-color: var(--bg-input);
-  padding: 0.3rem 0.65rem;
-  border-radius: var(--radius-sm);
-  transition: all 0.15s ease;
+  padding: 0.28rem 0.65rem;
+  border-radius: var(--radius-xs);
+  transition: all 0.15s;
 }
 
-.btn-header-reset:hover {
+.btn-workspace-action:hover {
   color: var(--text-primary);
   border-color: var(--border-strong);
   background-color: var(--bg-surface-elevated);
 }
 
-/* =========================================================================
-   3-AREA DESKTOP WORKSPACE LAYOUT
-   Area A: Controls & Reference (Left)
-   Area B: Circuit Schematic (Center)
-   Area C: Step-by-Step Explanation (Right)
-   Area B & C are SIDE BY SIDE on desktop!
-   ========================================================================= */
-
-.tutor-workspace {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 290px minmax(360px, 1.15fr) minmax(320px, 1fr);
-  gap: 1rem;
-  padding: 1rem 1.25rem;
-  max-width: 1720px;
-  width: 100%;
-  margin: 0 auto;
-  align-items: start;
+.btn-workspace-action.action-active {
+  color: var(--accent-voltage);
+  border-color: var(--accent-voltage);
+  background-color: var(--accent-voltage-dim);
 }
 
-@media (min-width: 1024px) {
-  /* On desktop viewports, lock viewport height to eliminate scrolling between B and C */
-  .tutor-workspace {
-    height: calc(100vh - 48px);
-    overflow: hidden;
-  }
-
-  .area-controls {
-    height: 100%;
-    overflow-y: auto;
-    padding-right: 0.25rem;
-  }
-
-  .area-diagram {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .area-explainer {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .diagram-panel {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .diagram-viewport {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .explainer-panel {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .explainer-scroll-body {
-    flex: 1;
-    overflow-y: auto;
-    padding-right: 0.35rem;
-  }
+.btn-new-problem {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
 }
 
-/* Base Panel Styling */
-.panel-card {
+/* 2. Horizontal Circuit Parameters Strip */
+.params-strip-container {
   background-color: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: 0.9rem;
-  box-shadow: var(--shadow-panel);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0.5rem 1.25rem;
+  flex-shrink: 0;
 }
 
-.panel-header {
+.params-strip-inner {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 0.75rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--border-subtle);
+  gap: 1.5rem;
+  flex-wrap: wrap;
 }
 
-.panel-title {
-  font-size: 0.86rem;
+.params-strip-label {
+  font-size: 0.76rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-secondary);
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
 }
 
-/* Semantic Accent Text Helpers */
-.text-voltage { color: var(--accent-voltage); }
-.text-resistance { color: var(--accent-resistance); }
-.text-current { color: var(--accent-current); }
-.text-formula { color: var(--accent-formula); }
-
-/* =========================================================================
-   AREA A: COMPACT CONTROLS, METRICS & REFERENCE
-   ========================================================================= */
-
-.area-controls {
+.param-control-group {
   display: flex;
-  flex-direction: column;
-  gap: 0.85rem;
-}
-
-/* Controls Panel */
-.controls-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 0.85rem;
-}
-
-.control-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.control-label-row {
-  display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 0.75rem;
 }
 
-.control-label {
+.param-title {
   font-size: 0.8rem;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
-.control-value-readout {
-  font-family: var(--font-mono);
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  background-color: var(--bg-input);
-  padding: 0.15rem 0.45rem;
-  border-radius: var(--radius-xs);
-  border: 1px solid var(--border-subtle);
-}
-
-.input-slider-pair {
-  display: grid;
-  grid-template-columns: 74px 1fr;
-  gap: 0.6rem;
+.param-inputs-row {
+  display: flex;
   align-items: center;
+  gap: 0.45rem;
 }
 
-.control-num-input {
+.param-num-input {
+  width: 58px;
   font-family: var(--font-mono);
-  font-size: 0.88rem;
-  font-weight: 600;
+  font-size: 0.85rem;
+  font-weight: 700;
   background-color: var(--bg-input);
   color: var(--text-primary);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 0.35rem 0.5rem;
+  border-radius: var(--radius-xs);
+  padding: 0.22rem 0.4rem;
+  text-align: right;
   transition: border-color 0.15s;
 }
 
-.control-num-input:focus {
+.param-num-input:focus {
   border-color: var(--border-focus);
   outline: none;
 }
 
-.control-num-input.input-invalid {
+.param-num-input.input-error {
   border-color: var(--accent-danger);
   background-color: var(--accent-danger-dim);
 }
 
-.control-range-slider {
+.param-unit-symbol {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.param-range-slider {
   appearance: none;
+  width: 90px;
   background: var(--border-subtle);
-  height: 5px;
+  height: 4px;
   border-radius: 999px;
   cursor: pointer;
 }
 
-.control-range-slider::-webkit-slider-thumb {
+.param-range-slider::-webkit-slider-thumb {
   appearance: none;
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: var(--text-secondary);
   border: 2px solid var(--bg-surface);
   cursor: pointer;
-  transition: background-color 0.15s, transform 0.15s;
-}
-
-.control-range-slider::-webkit-slider-thumb:hover {
-  background: var(--text-primary);
-  transform: scale(1.15);
 }
 
 .slider-voltage::-webkit-slider-thumb {
@@ -269,251 +504,141 @@
   background: var(--accent-resistance);
 }
 
-.field-hint {
-  font-size: 0.7rem;
-  color: var(--text-muted);
-}
-
-/* Validation Alert */
-.validation-alert {
-  margin-top: 0.75rem;
-  display: flex;
-  gap: 0.5rem;
-  background-color: var(--accent-danger-dim);
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  border-radius: var(--radius-sm);
-  padding: 0.6rem 0.75rem;
-}
-
-.alert-icon {
-  color: var(--accent-danger);
-  flex-shrink: 0;
-  margin-top: 0.1rem;
-}
-
-.alert-heading {
-  display: block;
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: var(--accent-danger);
-  margin-bottom: 0.15rem;
-}
-
-.alert-text {
-  font-size: 0.73rem;
-  color: #fca5a5;
-  line-height: 1.35;
-}
-
-/* Metrics Compact Grid */
-.metrics-compact-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.45rem;
-}
-
-.metric-tile {
-  background-color: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 0.45rem 0.6rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-.metric-tile-label {
-  font-size: 0.68rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-}
-
-.metric-tile-val {
-  font-family: var(--font-mono);
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.metric-v .metric-tile-val { color: var(--accent-voltage); }
-.metric-r .metric-tile-val { color: var(--accent-resistance); }
-.metric-i .metric-tile-val { color: var(--accent-current); }
-.metric-p .metric-tile-val { color: #f97316; }
-
-/* Textbook Image Reference */
-.dropzone-box {
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-sm);
-  padding: 1rem 0.75rem;
-  text-align: center;
-  cursor: pointer;
-  background-color: var(--bg-input);
-  transition: border-color 0.15s, background-color 0.15s;
-}
-
-.dropzone-box:hover,
-.dropzone-dragover {
-  border-color: var(--accent-voltage);
-  background-color: var(--accent-voltage-dim);
-}
-
-.dropzone-icon {
-  color: var(--text-muted);
-  margin-bottom: 0.35rem;
-}
-
-.dropzone-text {
-  font-size: 0.76rem;
-  color: var(--text-secondary);
-}
-
-.text-link {
-  color: var(--accent-voltage);
-  text-decoration: underline;
-}
-
-.dropzone-formats-note {
+.param-range-bounds {
   font-size: 0.68rem;
   color: var(--text-muted);
-  margin-top: 0.2rem;
-}
-
-.btn-sample-reference {
-  margin-top: 0.6rem;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--accent-voltage);
-  border: 1px solid var(--border-subtle);
-  background-color: var(--bg-surface);
-  padding: 0.25rem 0.55rem;
-  border-radius: var(--radius-xs);
-  transition: all 0.15s;
-}
-
-.btn-sample-reference:hover {
-  border-color: var(--accent-voltage);
-  background-color: var(--accent-voltage-dim);
-}
-
-.preview-layout {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-}
-
-.preview-frame {
-  max-height: 140px;
-  overflow: hidden;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background-color: #000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.preview-img {
-  max-width: 100%;
-  max-height: 140px;
-  object-fit: contain;
-}
-
-.preview-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.72rem;
-}
-
-.file-details {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.file-name {
-  color: var(--text-secondary);
-  font-weight: 500;
+.params-strip-divider {
+  width: 1px;
+  height: 20px;
+  background-color: var(--border-subtle);
 }
 
-.file-size {
-  color: var(--text-muted);
-}
-
-.preview-actions {
+.params-inline-error {
+  margin-top: 0.35rem;
   display: flex;
-  gap: 0.35rem;
-}
-
-.btn-text-action {
-  font-size: 0.72rem;
-  color: var(--text-secondary);
-  border: 1px solid var(--border-subtle);
-  background-color: var(--bg-input);
-  padding: 0.15rem 0.45rem;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.74rem;
+  color: #fca5a5;
+  background-color: var(--accent-danger-dim);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 0.25rem 0.55rem;
   border-radius: var(--radius-xs);
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
 }
 
-.btn-text-action:hover {
-  color: var(--text-primary);
-  border-color: var(--border-strong);
-}
-
-.btn-text-action.action-danger:hover {
+.error-icon {
   color: var(--accent-danger);
-  border-color: var(--accent-danger);
+  flex-shrink: 0;
 }
 
-.reference-note {
-  font-size: 0.69rem;
-  color: var(--text-muted);
-  line-height: 1.35;
-  margin-top: 0.5rem;
+/* 3. Horizontal Calculated Values Strip */
+.calc-strip-container {
+  background-color: #0c111a;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0.45rem 1.25rem;
+  flex-shrink: 0;
 }
 
-.upload-inline-error {
-  margin-top: 0.5rem;
+.calc-strip-inner {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.72rem;
-  color: var(--accent-danger);
+  gap: 1.25rem;
+  flex-wrap: wrap;
 }
 
-/* =========================================================================
-   AREA B: CIRCUIT SCHEMATIC VISUALISATION
-   ========================================================================= */
+.calc-strip-heading {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.calc-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.calc-item-name {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
+.calc-item-data {
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.item-voltage .calc-item-data { color: var(--accent-voltage); }
+.item-resistance .calc-item-data { color: var(--accent-resistance); }
+.item-current .calc-item-data { color: var(--accent-current); }
+.item-power .calc-item-data { color: #f97316; }
+
+.calc-dot-sep {
+  color: var(--border-strong);
+  font-size: 0.8rem;
+}
+
+/* 4. Main Two-Column Side-by-Side Area (58% / 42%) */
+.workspace-main-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 58%) minmax(0, 42%);
+  gap: 1.25rem;
+  padding: 1rem 1.25rem 2.5rem;
+  max-width: 1720px;
+  width: 100%;
+  margin: 0 auto;
+  align-items: start;
+}
+
+.circuit-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.explanation-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Circuit Column & Diagram Panel */
+.diagram-panel {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  box-shadow: var(--shadow-panel);
+}
 
 .diagram-panel-header {
-  margin-bottom: 0.5rem;
-}
-
-.diagram-status-row {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.diagram-caption-hint {
+  font-size: 0.72rem;
   color: var(--text-muted);
 }
 
-.status-item.item-active {
+.panel-title {
+  font-size: 0.82rem;
   font-weight: 700;
-}
-
-.status-divider {
-  color: var(--border-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
 }
 
 .diagram-viewport {
@@ -521,296 +646,401 @@
   background-color: #080c14;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  padding: 0.5rem;
+  padding: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
 }
 
 .schematic-svg {
   width: 100%;
-  max-width: 580px;
+  max-width: 680px;
   height: auto;
   display: block;
 }
 
-.diagram-caption-bar {
-  margin-top: 0.5rem;
-  font-size: 0.72rem;
-  color: var(--text-muted);
-}
-
-/* Conductor Loop Highlighting */
-.conductor-loop {
-  transition: all 0.2s ease;
-}
-
-.conductor-loop.loop-highlighted line {
-  stroke: var(--accent-formula);
-  stroke-width: 3px;
-}
-
-/* Interactive Component Clicks */
-.interactive-component:focus {
-  outline: none;
-}
-
-.interactive-component:hover {
-  opacity: 0.95;
-}
-
-/* =========================================================================
-   AREA C: STEP-BY-STEP EXPLANATION
-   ========================================================================= */
-
-.explainer-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.step-counter-label {
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.step-tabs {
-  display: flex;
-  gap: 0.3rem;
-}
-
-.step-tab-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.22rem 0.5rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--text-muted);
+/* Explanation Column & Explainer Card */
+.explainer-card {
+  background-color: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  background-color: var(--bg-input);
-  border-radius: var(--radius-xs);
-  transition: all 0.15s ease;
-}
-
-.step-tab-btn:hover {
-  color: var(--text-primary);
-  border-color: var(--border-strong);
-}
-
-.step-tab-btn.tab-active {
-  color: var(--accent-voltage);
-  border-color: var(--accent-voltage);
-  background-color: var(--accent-voltage-dim);
-}
-
-.step-tab-btn.tab-done {
-  color: var(--accent-current);
-  border-color: rgba(16, 185, 129, 0.3);
-}
-
-.tab-check-icon {
-  stroke-width: 3;
-}
-
-.explainer-scroll-body {
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  box-shadow: var(--shadow-panel);
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.85rem;
 }
 
-.step-heading-group {
-  margin-top: 0.25rem;
-}
-
-.step-title {
-  font-size: 1.05rem;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.step-sub {
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  margin-top: 0.1rem;
-}
-
-/* Math Display */
-.math-display-card {
-  background-color: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 0.65rem 0.85rem;
-}
-
-.math-card-label {
-  display: block;
-  font-size: 0.68rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-  margin-bottom: 0.25rem;
-}
-
-.math-code-value {
-  font-family: var(--font-mono);
-  font-size: 1.05rem;
-  font-weight: 700;
-  color: var(--accent-voltage);
-}
-
-/* Explanation Prose */
-.explanation-prose {
-  font-size: 0.84rem;
-  line-height: 1.55;
-  color: #cbd5e1;
-  background-color: rgba(22, 28, 40, 0.5);
-  border-left: 2px solid var(--border-strong);
-  padding: 0.55rem 0.75rem;
-  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
-}
-
-/* Python Reference */
-.python-reference-card {
-  background-color: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 0.55rem 0.75rem;
-}
-
-.python-card-label {
-  display: block;
-  font-size: 0.68rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin-bottom: 0.25rem;
-}
-
-.python-inline-code {
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  color: var(--accent-current);
-}
-
-/* Navigation Footer */
-.explainer-nav-footer {
+/* Arrow Navigation Bar: ← Previous   Step 1 of 4   Next → */
+.explainer-nav-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 0.85rem;
-  padding-top: 0.65rem;
-  border-top: 1px solid var(--border-subtle);
+  gap: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.btn-step-nav {
+.btn-step-arrow {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   font-size: 0.8rem;
   font-weight: 600;
-  padding: 0.38rem 0.85rem;
-  border-radius: var(--radius-sm);
-  transition: all 0.15s ease;
-}
-
-.btn-step-prev {
-  background-color: var(--bg-input);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-subtle);
-}
-
-.btn-step-prev:hover:not(:disabled) {
   color: var(--text-primary);
-  border-color: var(--border-strong);
   background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-strong);
+  padding: 0.35rem 0.8rem;
+  border-radius: var(--radius-xs);
+  transition: all 0.15s ease;
+  cursor: pointer;
 }
 
-.btn-step-next {
-  background-color: #2563eb;
-  color: #ffffff;
-  border: 1px solid #1d4ed8;
+.btn-step-arrow:hover:not(:disabled) {
+  background-color: #243048;
+  border-color: var(--accent-voltage);
+  color: var(--accent-voltage);
 }
 
-.btn-step-next:hover:not(:disabled) {
-  background-color: #1d4ed8;
-}
-
-.btn-step-nav:disabled {
+.btn-step-arrow:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+  border-color: var(--border-subtle);
+  color: var(--text-muted);
+  background-color: var(--bg-input);
 }
 
-.nav-keyboard-hint {
+.btn-step-arrow-next:not(:disabled) {
+  background-color: #2563eb;
+  border-color: #1d4ed8;
+  color: #ffffff;
+}
+
+.btn-step-arrow-next:not(:disabled):hover {
+  background-color: #1d4ed8;
+  color: #ffffff;
+}
+
+.step-indicator-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.step-indicator-text {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.step-keyboard-pill {
   font-size: 0.7rem;
   color: var(--text-muted);
 }
 
-.nav-keyboard-hint kbd {
+.step-keyboard-pill kbd {
   background-color: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: 3px;
-  padding: 0.1rem 0.3rem;
+  padding: 0.1rem 0.28rem;
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   color: var(--text-secondary);
 }
 
-.empty-state-notice {
-  text-align: center;
-  padding: 2.5rem 1rem;
+.explainer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
 }
 
-.empty-title {
-  font-size: 0.95rem;
-  color: var(--text-secondary);
-  margin-bottom: 0.35rem;
+.step-header-block {
+  margin-bottom: 0.15rem;
 }
 
-.empty-desc {
+.step-main-heading {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.step-sub-heading {
   font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-top: 0.1rem;
+}
+
+/* Streamlined 3-Part Educational Explanation (Part A, Part B, Part C) */
+.explanation-section {
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.section-heading {
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--text-muted);
 }
 
+.part-a-text {
+  font-size: 0.92rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: 1.45;
+}
+
+/* Part B: Work It Out Sequence */
+.calculation-sequence {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-top: 0.2rem;
+}
+
+.calc-stage {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  padding: 0.55rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.stage-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.stage-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background-color: var(--bg-surface-elevated);
+  color: var(--text-secondary);
+  padding: 0.12rem 0.45rem;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+}
+
+.stage-badge-result {
+  background-color: var(--accent-current-dim);
+  color: var(--accent-current);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.stage-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.stage-math-box {
+  font-family: var(--font-mono);
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: var(--accent-voltage);
+  background-color: #080c14;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  padding: 0.35rem 0.6rem;
+}
+
+.stage-final-answer .stage-math-box {
+  font-size: 1.15rem;
+  color: var(--accent-current);
+  border-color: rgba(16, 185, 129, 0.4);
+  background-color: rgba(16, 185, 129, 0.06);
+}
+
+.stage-desc {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* Part C: What This Means */
+.section-part-c {
+  border-left: 3px solid var(--accent-voltage);
+}
+
+.part-c-text {
+  font-size: 0.88rem;
+  color: #cbd5e1;
+  line-height: 1.5;
+}
+
+
+
+/* Reference Viewer Drawer Overlay */
+.reference-drawer-overlay {
+  position: fixed;
+  top: 46px;
+  right: 0;
+  bottom: 0;
+  width: 480px;
+  max-width: 90vw;
+  background-color: var(--bg-surface);
+  border-left: 1px solid var(--border-subtle);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.6);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+}
+
+.reference-drawer-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+}
+
+.reference-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.reference-header-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.reference-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.reference-filename {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.btn-close-drawer {
+  color: var(--text-muted);
+  padding: 0.25rem;
+  border-radius: var(--radius-xs);
+  transition: color 0.15s;
+}
+
+.btn-close-drawer:hover {
+  color: var(--text-primary);
+}
+
+.reference-image-stage {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #000;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  margin: 0.85rem 0;
+}
+
+.reference-full-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.reference-drawer-footer {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.reference-footer-note {
+  margin: 0;
+}
+
 /* =========================================================================
-   RESPONSIVE BEHAVIOR (TABLET & MOBILE)
+   RESPONSIVE LAYOUT (TABLET & MOBILE)
    ========================================================================= */
 
-/* Tablets / Small Laptops (768px to 1023px) */
 @media (max-width: 1023px) and (min-width: 768px) {
-  .tutor-workspace {
-    grid-template-columns: 1fr 1fr;
-    grid-template-areas:
-      "controls controls"
-      "diagram explainer";
+  .workspace-screen {
     height: auto;
     overflow: visible;
   }
 
-  .area-controls {
-    grid-area: controls;
-    display: grid;
+  .workspace-main-grid {
     grid-template-columns: 1fr 1fr;
-    gap: 0.85rem;
-  }
-
-  .area-controls .upload-panel {
-    grid-column: span 2;
-  }
-
-  .area-diagram {
-    grid-area: diagram;
-  }
-
-  .area-explainer {
-    grid-area: explainer;
+    height: auto;
+    overflow: visible;
   }
 }
 
-/* Mobile Phones (< 768px) */
 @media (max-width: 767px) {
-  .tutor-workspace {
+  .landing-main-content {
+    padding: 2rem 1rem;
+  }
+
+  .landing-title {
+    font-size: 1.75rem;
+  }
+
+  .landing-dropzone {
+    padding: 2rem 1rem;
+  }
+
+  .workspace-screen {
+    height: auto;
+    overflow: visible;
+  }
+
+  .workspace-header {
+    height: auto;
+    padding: 0.65rem 0.85rem;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .workspace-topic-tag {
+    display: none;
+  }
+
+  .params-strip-inner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+
+  .params-strip-divider {
+    display: none;
+  }
+
+  .calc-strip-inner {
+    gap: 0.65rem;
+  }
+
+  .calc-dot-sep {
+    display: none;
+  }
+
+  .workspace-main-grid {
     grid-template-columns: 1fr;
     height: auto;
     overflow: visible;
@@ -818,27 +1048,11 @@
     gap: 0.85rem;
   }
 
-  .area-diagram {
+  .circuit-column {
     order: 1;
   }
 
-  .area-explainer {
+  .explanation-column {
     order: 2;
-  }
-
-  .area-controls {
-    order: 3;
-  }
-
-  .app-header {
-    padding: 0 0.85rem;
-  }
-
-  .header-topic {
-    display: none;
-  }
-
-  .header-separator {
-    display: none;
   }
 }
