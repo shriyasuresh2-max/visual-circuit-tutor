@@ -1,0 +1,844 @@
+/* App Container & Header */
+.tutor-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-app);
+}
+
+.app-header {
+  height: 48px;
+  padding: 0 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--bg-surface);
+  flex-shrink: 0;
+}
+
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.header-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.header-separator {
+  color: var(--border-strong);
+  font-weight: 300;
+}
+
+.header-topic {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.btn-header-reset {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-input);
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--radius-sm);
+  transition: all 0.15s ease;
+}
+
+.btn-header-reset:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background-color: var(--bg-surface-elevated);
+}
+
+/* =========================================================================
+   3-AREA DESKTOP WORKSPACE LAYOUT
+   Area A: Controls & Reference (Left)
+   Area B: Circuit Schematic (Center)
+   Area C: Step-by-Step Explanation (Right)
+   Area B & C are SIDE BY SIDE on desktop!
+   ========================================================================= */
+
+.tutor-workspace {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 290px minmax(360px, 1.15fr) minmax(320px, 1fr);
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  max-width: 1720px;
+  width: 100%;
+  margin: 0 auto;
+  align-items: start;
+}
+
+@media (min-width: 1024px) {
+  /* On desktop viewports, lock viewport height to eliminate scrolling between B and C */
+  .tutor-workspace {
+    height: calc(100vh - 48px);
+    overflow: hidden;
+  }
+
+  .area-controls {
+    height: 100%;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+  }
+
+  .area-diagram {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .area-explainer {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .diagram-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .diagram-viewport {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .explainer-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .explainer-scroll-body {
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 0.35rem;
+  }
+}
+
+/* Base Panel Styling */
+.panel-card {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 0.9rem;
+  box-shadow: var(--shadow-panel);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.panel-title {
+  font-size: 0.86rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+/* Semantic Accent Text Helpers */
+.text-voltage { color: var(--accent-voltage); }
+.text-resistance { color: var(--accent-resistance); }
+.text-current { color: var(--accent-current); }
+.text-formula { color: var(--accent-formula); }
+
+/* =========================================================================
+   AREA A: COMPACT CONTROLS, METRICS & REFERENCE
+   ========================================================================= */
+
+.area-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+/* Controls Panel */
+.controls-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.control-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.control-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.control-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.control-value-readout {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  background-color: var(--bg-input);
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+}
+
+.input-slider-pair {
+  display: grid;
+  grid-template-columns: 74px 1fr;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.control-num-input {
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  font-weight: 600;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.5rem;
+  transition: border-color 0.15s;
+}
+
+.control-num-input:focus {
+  border-color: var(--border-focus);
+  outline: none;
+}
+
+.control-num-input.input-invalid {
+  border-color: var(--accent-danger);
+  background-color: var(--accent-danger-dim);
+}
+
+.control-range-slider {
+  appearance: none;
+  background: var(--border-subtle);
+  height: 5px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.control-range-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  border: 2px solid var(--bg-surface);
+  cursor: pointer;
+  transition: background-color 0.15s, transform 0.15s;
+}
+
+.control-range-slider::-webkit-slider-thumb:hover {
+  background: var(--text-primary);
+  transform: scale(1.15);
+}
+
+.slider-voltage::-webkit-slider-thumb {
+  background: var(--accent-voltage);
+}
+
+.slider-resistance::-webkit-slider-thumb {
+  background: var(--accent-resistance);
+}
+
+.field-hint {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+/* Validation Alert */
+.validation-alert {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+  background-color: var(--accent-danger-dim);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+}
+
+.alert-icon {
+  color: var(--accent-danger);
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+.alert-heading {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--accent-danger);
+  margin-bottom: 0.15rem;
+}
+
+.alert-text {
+  font-size: 0.73rem;
+  color: #fca5a5;
+  line-height: 1.35;
+}
+
+/* Metrics Compact Grid */
+.metrics-compact-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+}
+
+.metric-tile {
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.metric-tile-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.metric-tile-val {
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.metric-v .metric-tile-val { color: var(--accent-voltage); }
+.metric-r .metric-tile-val { color: var(--accent-resistance); }
+.metric-i .metric-tile-val { color: var(--accent-current); }
+.metric-p .metric-tile-val { color: #f97316; }
+
+/* Textbook Image Reference */
+.dropzone-box {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 1rem 0.75rem;
+  text-align: center;
+  cursor: pointer;
+  background-color: var(--bg-input);
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.dropzone-box:hover,
+.dropzone-dragover {
+  border-color: var(--accent-voltage);
+  background-color: var(--accent-voltage-dim);
+}
+
+.dropzone-icon {
+  color: var(--text-muted);
+  margin-bottom: 0.35rem;
+}
+
+.dropzone-text {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.text-link {
+  color: var(--accent-voltage);
+  text-decoration: underline;
+}
+
+.dropzone-formats-note {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+}
+
+.btn-sample-reference {
+  margin-top: 0.6rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent-voltage);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-surface);
+  padding: 0.25rem 0.55rem;
+  border-radius: var(--radius-xs);
+  transition: all 0.15s;
+}
+
+.btn-sample-reference:hover {
+  border-color: var(--accent-voltage);
+  background-color: var(--accent-voltage-dim);
+}
+
+.preview-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.preview-frame {
+  max-height: 140px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background-color: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-img {
+  max-width: 100%;
+  max-height: 140px;
+  object-fit: contain;
+}
+
+.preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.72rem;
+}
+
+.file-details {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-name {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.file-size {
+  color: var(--text-muted);
+}
+
+.preview-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.btn-text-action {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-input);
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-xs);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.btn-text-action:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.btn-text-action.action-danger:hover {
+  color: var(--accent-danger);
+  border-color: var(--accent-danger);
+}
+
+.reference-note {
+  font-size: 0.69rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+  margin-top: 0.5rem;
+}
+
+.upload-inline-error {
+  margin-top: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  color: var(--accent-danger);
+}
+
+/* =========================================================================
+   AREA B: CIRCUIT SCHEMATIC VISUALISATION
+   ========================================================================= */
+
+.diagram-panel-header {
+  margin-bottom: 0.5rem;
+}
+
+.diagram-status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.status-item.item-active {
+  font-weight: 700;
+}
+
+.status-divider {
+  color: var(--border-subtle);
+}
+
+.diagram-viewport {
+  width: 100%;
+  background-color: #080c14;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem;
+  overflow: hidden;
+}
+
+.schematic-svg {
+  width: 100%;
+  max-width: 580px;
+  height: auto;
+  display: block;
+}
+
+.diagram-caption-bar {
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+/* Conductor Loop Highlighting */
+.conductor-loop {
+  transition: all 0.2s ease;
+}
+
+.conductor-loop.loop-highlighted line {
+  stroke: var(--accent-formula);
+  stroke-width: 3px;
+}
+
+/* Interactive Component Clicks */
+.interactive-component:focus {
+  outline: none;
+}
+
+.interactive-component:hover {
+  opacity: 0.95;
+}
+
+/* =========================================================================
+   AREA C: STEP-BY-STEP EXPLANATION
+   ========================================================================= */
+
+.explainer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.step-counter-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.step-tabs {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.step-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.22rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-input);
+  border-radius: var(--radius-xs);
+  transition: all 0.15s ease;
+}
+
+.step-tab-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.step-tab-btn.tab-active {
+  color: var(--accent-voltage);
+  border-color: var(--accent-voltage);
+  background-color: var(--accent-voltage-dim);
+}
+
+.step-tab-btn.tab-done {
+  color: var(--accent-current);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.tab-check-icon {
+  stroke-width: 3;
+}
+
+.explainer-scroll-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.step-heading-group {
+  margin-top: 0.25rem;
+}
+
+.step-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.step-sub {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-top: 0.1rem;
+}
+
+/* Math Display */
+.math-display-card {
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.85rem;
+}
+
+.math-card-label {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.25rem;
+}
+
+.math-code-value {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--accent-voltage);
+}
+
+/* Explanation Prose */
+.explanation-prose {
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: #cbd5e1;
+  background-color: rgba(22, 28, 40, 0.5);
+  border-left: 2px solid var(--border-strong);
+  padding: 0.55rem 0.75rem;
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+}
+
+/* Python Reference */
+.python-reference-card {
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.75rem;
+}
+
+.python-card-label {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 0.25rem;
+}
+
+.python-inline-code {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--accent-current);
+}
+
+/* Navigation Footer */
+.explainer-nav-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.85rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.btn-step-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.38rem 0.85rem;
+  border-radius: var(--radius-sm);
+  transition: all 0.15s ease;
+}
+
+.btn-step-prev {
+  background-color: var(--bg-input);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+.btn-step-prev:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background-color: var(--bg-surface-elevated);
+}
+
+.btn-step-next {
+  background-color: #2563eb;
+  color: #ffffff;
+  border: 1px solid #1d4ed8;
+}
+
+.btn-step-next:hover:not(:disabled) {
+  background-color: #1d4ed8;
+}
+
+.btn-step-nav:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.nav-keyboard-hint {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.nav-keyboard-hint kbd {
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 0.1rem 0.3rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.empty-state-notice {
+  text-align: center;
+  padding: 2.5rem 1rem;
+}
+
+.empty-title {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.35rem;
+}
+
+.empty-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* =========================================================================
+   RESPONSIVE BEHAVIOR (TABLET & MOBILE)
+   ========================================================================= */
+
+/* Tablets / Small Laptops (768px to 1023px) */
+@media (max-width: 1023px) and (min-width: 768px) {
+  .tutor-workspace {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "controls controls"
+      "diagram explainer";
+    height: auto;
+    overflow: visible;
+  }
+
+  .area-controls {
+    grid-area: controls;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.85rem;
+  }
+
+  .area-controls .upload-panel {
+    grid-column: span 2;
+  }
+
+  .area-diagram {
+    grid-area: diagram;
+  }
+
+  .area-explainer {
+    grid-area: explainer;
+  }
+}
+
+/* Mobile Phones (< 768px) */
+@media (max-width: 767px) {
+  .tutor-workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
+    padding: 0.75rem;
+    gap: 0.85rem;
+  }
+
+  .area-diagram {
+    order: 1;
+  }
+
+  .area-explainer {
+    order: 2;
+  }
+
+  .area-controls {
+    order: 3;
+  }
+
+  .app-header {
+    padding: 0 0.85rem;
+  }
+
+  .header-topic {
+    display: none;
+  }
+
+  .header-separator {
+    display: none;
+  }
+}

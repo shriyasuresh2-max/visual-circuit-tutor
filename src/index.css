@@ -1,0 +1,75 @@
+:root {
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+
+  /* Engineering Dark Slate Palette */
+  --bg-app: #0b0f17;
+  --bg-surface: #121824;
+  --bg-surface-elevated: #172030;
+  --bg-input: #0a0e15;
+
+  --border-subtle: #1e293b;
+  --border-strong: #2c3b52;
+  --border-focus: #3b82f6;
+
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  /* Restrained Engineering Semantic Accents */
+  --accent-voltage: #38bdf8;       /* Clear sky blue */
+  --accent-voltage-dim: rgba(56, 189, 248, 0.1);
+  --accent-resistance: #f59e0b;    /* Warm amber */
+  --accent-resistance-dim: rgba(245, 158, 11, 0.1);
+  --accent-current: #10b981;       /* Technical emerald */
+  --accent-current-dim: rgba(16, 185, 129, 0.1);
+  --accent-formula: #818cf8;       /* Calm indigo */
+  --accent-formula-dim: rgba(129, 140, 248, 0.1);
+
+  --accent-danger: #ef4444;
+  --accent-danger-dim: rgba(239, 68, 68, 0.1);
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+
+  --shadow-panel: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+input {
+  font-family: inherit;
+}
+
+/* Subtle Current Flow Animation (clean stroke dash, no heavy neon bloom) */
+@keyframes flowDash {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+.current-dash-flow {
+  animation: flowDash 1.2s linear infinite;
+}
