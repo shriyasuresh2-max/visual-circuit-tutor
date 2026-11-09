@@ -1,13 +1,15 @@
 import React, { useRef, useState } from 'react';
 import { Upload, FileImage, ArrowRight, RefreshCw, BookOpen, AlertCircle } from 'lucide-react';
 import { createSampleCircuitFile } from '../utils/sampleCircuit.js';
+import AnalysisResultPanel from './AnalysisResultPanel.jsx';
 
 export default function LandingPage({
   imageFile,
   imagePreviewUrl,
   onImageSelected,
   onImageRemoved,
-  onContinueToWorkspace
+  onContinueToWorkspace,
+  analysisState,
 }) {
   const fileInputRef = useRef(null);
   const [dragActive, setDragActive] = useState(false);
@@ -146,6 +148,13 @@ export default function LandingPage({
                   <ArrowRight size={16} />
                 </button>
               </div>
+
+              {/* Analysis results shown inline on the landing page */}
+              {analysisState && analysisState.status !== 'idle' && (
+                <div className="landing-analysis-result">
+                  <AnalysisResultPanel analysisState={analysisState} />
+                </div>
+              )}
             </div>
           ) : (
             /* Empty Drag & Drop Zone */
@@ -207,9 +216,10 @@ export default function LandingPage({
           {/* Unobtrusive Honest Limitation Notice */}
           <div className="landing-limitation-notice">
             <p>
-              <strong>Please note:</strong> Automated circuit recognition is in active development.
-              Your uploaded diagram will be displayed as a visual reference alongside the interactive solver,
-              allowing you to align parameters and follow the solution step by step.
+              <strong>Please note:</strong> Circuit recognition identifies components and
+              connections visible in your image using AI vision.
+              It does not numerically solve the circuit — use the interactive
+              workspace to work through the solution step by step.
             </p>
           </div>
         </section>

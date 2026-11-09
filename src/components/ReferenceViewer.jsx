@@ -1,11 +1,13 @@
 import React from 'react';
 import { X, FileText, Info } from 'lucide-react';
+import AnalysisResultPanel from './AnalysisResultPanel.jsx';
 
 export default function ReferenceViewer({
   isOpen,
   onClose,
   imageFile,
-  imagePreviewUrl
+  imagePreviewUrl,
+  analysisState,
 }) {
   if (!isOpen || !imagePreviewUrl) return null;
 
@@ -38,6 +40,13 @@ export default function ReferenceViewer({
             className="reference-full-img"
           />
         </div>
+
+        {/* Circuit recognition results */}
+        {analysisState && analysisState.status !== 'idle' && (
+          <div className="reference-analysis-section">
+            <AnalysisResultPanel analysisState={analysisState} />
+          </div>
+        )}
 
         <div className="reference-drawer-footer">
           <Info size={14} className="text-muted flex-shrink-0" />

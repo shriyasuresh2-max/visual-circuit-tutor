@@ -1056,3 +1056,426 @@
     order: 2;
   }
 }
+
+
+/* =========================================================================
+   CIRCUIT ANALYSIS RESULT PANEL
+   ========================================================================= */
+
+/* Shared panel shell */
+.analysis-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-md);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  margin-top: 0.5rem;
+}
+
+/* Loading */
+.analysis-panel--loading {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.55rem;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.analysis-spinner {
+  animation: spin 1s linear infinite;
+  flex-shrink: 0;
+  color: var(--accent-formula);
+}
+
+/* Warning (SVG / unsupported) */
+.analysis-panel--warning {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.6rem;
+  background: rgba(245, 158, 11, 0.07);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  color: var(--text-secondary);
+}
+
+.analysis-panel--warning svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--accent-resistance);
+}
+
+/* Error */
+.analysis-panel--error {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.6rem;
+  background: var(--accent-danger-dim);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: var(--text-secondary);
+}
+
+.analysis-panel--error svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--accent-danger);
+}
+
+/* Success */
+.analysis-panel--success {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-strong);
+}
+
+.analysis-panel-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.15rem;
+}
+
+.analysis-panel-body {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Success header row */
+.analysis-header-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.55rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.analysis-success-icon {
+  color: var(--accent-current);
+  flex-shrink: 0;
+}
+
+.analysis-header-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.analysis-circuit-type-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-xs);
+  background: var(--accent-voltage-dim);
+  color: var(--accent-voltage);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  white-space: nowrap;
+}
+
+/* Not-a-circuit notice */
+.analysis-not-circuit-notice {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  padding: 0.35rem 0;
+}
+
+.analysis-not-circuit-notice svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* Section */
+.analysis-section {
+  padding-top: 0.5rem;
+}
+
+.analysis-section-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 0.4rem;
+}
+
+.analysis-section-title--warn {
+  color: var(--accent-resistance);
+}
+
+/* Question text */
+.analysis-question-text {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  border-left: 2px solid var(--border-strong);
+  padding-left: 0.6rem;
+  margin: 0;
+  line-height: 1.55;
+  font-style: italic;
+}
+
+/* Components list */
+.analysis-components-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.analysis-component-card {
+  padding: 0.45rem 0.65rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+}
+
+.analysis-component-header {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.analysis-component-id {
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--accent-voltage);
+  min-width: 2rem;
+}
+
+.analysis-component-type {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.analysis-confidence {
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.analysis-component-value {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-top: 0.2rem;
+}
+
+.analysis-component-value strong {
+  color: var(--accent-resistance);
+}
+
+.analysis-component-terminals {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.analysis-terminal-badge {
+  display: inline-block;
+  padding: 0.05rem 0.3rem;
+  border-radius: var(--radius-xs);
+  background: var(--bg-app);
+  border: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+.analysis-component-notes {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+  font-style: italic;
+}
+
+/* Connections */
+.analysis-connections-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.analysis-connection-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.analysis-conn-endpoint {
+  color: var(--text-primary);
+}
+
+.analysis-conn-arrow {
+  color: var(--text-muted);
+}
+
+.analysis-conn-note {
+  color: var(--accent-resistance);
+  cursor: help;
+  font-size: 0.8rem;
+}
+
+/* Unclear details */
+.analysis-unclear-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0;
+}
+
+.analysis-unclear-list li {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  padding-left: 0.75rem;
+  position: relative;
+}
+
+.analysis-unclear-list li::before {
+  content: '⚠';
+  position: absolute;
+  left: 0;
+  font-size: 0.65rem;
+  color: var(--accent-resistance);
+  top: 0.05rem;
+}
+
+/* General notes */
+.analysis-general-notes {
+  font-size: 0.77rem;
+  color: var(--text-muted);
+  font-style: italic;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Disclaimer */
+.analysis-disclaimer {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Analysis section inside ReferenceViewer drawer */
+.reference-analysis-section {
+  padding: 0 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Analysis result on landing page — under the preview card */
+.landing-analysis-result {
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+/* =========================================================================
+   RECONSTRUCTED CIRCUIT DIAGRAM (image analysis mode)
+   ========================================================================= */
+
+.rc-notice {
+  margin-bottom: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.rc-notice--approx {
+  background-color: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  color: #d97706;
+}
+
+.rc-notice--incomplete {
+  background-color: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: #ef4444;
+}
+
+.rc-uncertain-notes {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background-color: rgba(245, 158, 11, 0.06);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.rc-uncertain-item {
+  font-size: 0.78rem;
+  color: #d97706;
+  font-family: var(--font-mono);
+}
+
+.rc-validation-warnings {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background-color: rgba(99, 102, 241, 0.06);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.rc-validation-item {
+  font-size: 0.75rem;
+  color: #818cf8;
+}
+
+.rc-comp text {
+  user-select: none;
+}
+
+.rc-zoom-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rc-zoom-btn {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid #2d3748;
+  border-radius: 4px;
+  background-color: #111827;
+  color: #cbd5e1;
+  font-size: 13px;
+  cursor: pointer;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rc-zoom-btn:hover {
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+
+.rc-rotate-btn {
+  font-size: 16px;
+  border-color: #38bdf8;
+  color: #38bdf8;
+}

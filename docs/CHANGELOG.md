@@ -4,6 +4,40 @@ All notable changes to the Visual Circuit Tutor project are documented in this f
 
 ---
 
+## [Graph-Driven Schematic Layout Rewrite] — 2026-11-04
+
+### Fixed (root causes of the incorrect diagrams)
+- **Components were drawn as node-to-node spans.** The old topology fallback placed each component's two terminals directly on two node positions, so a resistor could stretch 400 px across the canvas at an arbitrary angle and there was no room left for wires (`V1: (80,80)→(480,107)`). Components are now fixed-size symbols on a clamped span, and the remaining distance to the node is always wire.
+- **The fallback emitted no wires for the loop itself** (a 3-component series circuit produced `Wires: 0`), leaving every terminal visually disconnected. Wires are now generated per electrical node: a 2-member node becomes one wire edge, a 3+-member node becomes a rail anchor with one segment per member.
+- **Bus wires started up to 60 px away from their terminal** (floating segments and gaps). Every wire endpoint is now a component terminal or a node anchor by construction.
+- **Traced vision-model polylines were rendered verbatim**, which produced diagonals, lost bends, duplicated wires and self-referential wires (`V1.− → V1.−`). Traced polylines are no longer used as geometry; the wires are re-derived from the electrical graph, while component centres, orientations and terminals from the image are still honoured.
+- **Symbol leads were computed from the extracted `orientation` while terminals came from the terminal vector**, so leads could point away from the symbol. Leads now derive from the terminal vector, and every symbol's half-extent matches the geometry the SVG actually draws.
+- **Junction dots were drawn twice, at node centroids** (mid-air, unrelated to any wire). Junction dots are now drawn once, exactly where a 3+-member node's wires meet; 2-member nodes never get a dot.
+- **Component label cards could cover wires and be clipped at the canvas edge.** Labels are re-placed after routing, avoiding symbols, other labels and wire paths, and are always kept fully inside the canvas.
+
+### Added
+- `src/circuit/schematicLayout.js` — the single layout pipeline, split by responsibility from `electricalGraph.js`: node anchors → component symbols → orthogonal wire routing → junction/crossing detection → geometric validation.
+- `validateSchematic()` replaces the previous "is some wire point near a terminal" check with real rendered-geometry validation: orthogonal segments, terminal contact, no floating endpoints, node continuity in the drawing, distinct nodes never touching, no wire ending on another wire's middle, symbol and label overlap, canvas containment and node-count agreement.
+- Conservative connection recovery: when the vision model returns a traced wire whose two terminals appear in no connection at all, that connection is recovered and surfaced as uncertain.
+- `src/circuit/schematicLayout.test.js` — 100 invariant-driven tests over 10 topologies (series, parallel, mixed, multiple sources, Wheatstone bridge, shared-branch loops, four orientations, unreliable wires, real Gemini fixture, open circuit), plus direct validator tests for diagonal wires, gaps, accidental T-junctions and interior crossings.
+
+### Changed
+- `circuitLayout.js` is now a thin adapter that keeps the existing public API (`layoutCircuit`, `validateRenderedCircuit`, `describeTopology`) over the new engine.
+- Tests that asserted the old defective behaviour (components spanning node positions, wire counts derived from traced polylines, crossings taken from declared flags) were rewritten to assert the correct invariants rather than relaxed.
+
+---
+
+## [Google Gemini Vision API Integration] — 2026-10-27
+
+### Changed
+- **Vision Backend Migration:** Replaced the OpenAI SDK in `backend/main.py` with Google's official `google-genai` Python SDK.
+- **Environment Configuration:** Updated backend to read `GEMINI_API_KEY` from `backend/.env` using `python-dotenv`. Added model configuration via `GEMINI_MODEL` (defaulting to `gemini-2.5-flash`). Updated `backend/.env.example`.
+- **Dependencies:** Updated `backend/requirements.txt` to include `google-genai>=2.0.0` and removed `openai`.
+- **Structured Schema Compatibility:** Preserved all Pydantic schemas (`CircuitAnalysis`, `Component`, `Connection`, `Terminal`, `CircuitType`, `ComponentType`) and added `is_circuit` alias synchronized with `contains_circuit`.
+- **Error Handling:** Implemented structured error mappings for `errors.ClientError` (401/403 for authentication, 429 for quota/rate-limits, 404 for model availability), `errors.ServerError` (503 for temporary service unavailability), and `errors.APIError` (502).
+
+---
+
 ## [Final-Step Next Button & 3-Part Explanation Refinement] — 2026-10-26
 
 ### Changed

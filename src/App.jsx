@@ -7,6 +7,7 @@ import CircuitDiagram from './components/CircuitDiagram.jsx';
 import StepExplainer from './components/StepExplainer.jsx';
 import ReferenceViewer from './components/ReferenceViewer.jsx';
 import { solveOhmSeriesCircuit } from './circuit/circuitEngine.js';
+import { useCircuitAnalysis } from './hooks/useCircuitAnalysis.js';
 import './App.css';
 
 export default function App() {
@@ -27,6 +28,9 @@ export default function App() {
   // Reference Viewer Drawer State (in workspace)
   const [isReferenceOpen, setIsReferenceOpen] = useState(false);
 
+  // Circuit analysis state managed by the custom hook
+  const { analysisState, analyzeImage, clearAnalysis } = useCircuitAnalysis();
+
   // Derive circuit solution using pure engine logic
   const circuitResult = useMemo(() => {
     return solveOhmSeriesCircuit({ voltage, resistance });
@@ -45,24 +49,30 @@ export default function App() {
     setIsReferenceOpen(false);
   };
 
-  // Handle image upload and memory cleanup
-  const handleImageSelected = (file, previewUrl) => {
+  // Handle image selection: revoke old URL, update state, trigger analysis
+  const handleImageSelected = useCallback((file, previewUrl) => {
     if (imagePreviewUrl) {
       URL.revokeObjectURL(imagePreviewUrl);
     }
+
     setImageFile(file);
     setImagePreviewUrl(previewUrl);
-  };
 
-  // Handle image removal
-  const handleImageRemoved = () => {
+    // Clear any previous analysis result before starting a new one
+    clearAnalysis();
+    analyzeImage(file);
+  }, [imagePreviewUrl, analyzeImage, clearAnalysis]);
+
+  // Handle image removal: revoke URL, clear image and analysis state
+  const handleImageRemoved = useCallback(() => {
     if (imagePreviewUrl) {
       URL.revokeObjectURL(imagePreviewUrl);
     }
     setImageFile(null);
     setImagePreviewUrl(null);
     setIsReferenceOpen(false);
-  };
+    clearAnalysis();
+  }, [imagePreviewUrl, clearAnalysis]);
 
   // Cleanup object URL on unmount
   useEffect(() => {
@@ -103,6 +113,7 @@ export default function App() {
           onImageSelected={handleImageSelected}
           onImageRemoved={handleImageRemoved}
           onContinueToWorkspace={() => setCurrentView('workspace')}
+          analysisState={analysisState}
         />
       ) : (
         /* PAGE TWO: CIRCUIT LEARNING WORKSPACE */
@@ -135,6 +146,7 @@ export default function App() {
                 circuitResult={circuitResult}
                 activeStep={activeStep}
                 onSelectStep={setActiveStep}
+                analysisResult={analysisState.status === 'success' ? analysisState.result : null}
               />
             </section>
 
@@ -148,12 +160,13 @@ export default function App() {
             </section>
           </main>
 
-          {/* Expandable Reference Diagram Drawer */}
+          {/* Expandable Reference Diagram Drawer (includes analysis results) */}
           <ReferenceViewer
             isOpen={isReferenceOpen}
             onClose={() => setIsReferenceOpen(false)}
             imageFile={imageFile}
             imagePreviewUrl={imagePreviewUrl}
+            analysisState={analysisState}
           />
         </div>
       )}

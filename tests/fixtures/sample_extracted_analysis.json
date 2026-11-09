@@ -1,0 +1,229 @@
+{
+  "contains_circuit": true,
+  "is_circuit": true,
+  "circuit_type": "series",
+  "components": [
+    {
+      "id": "V1",
+      "type": "battery",
+      "visible_value": "12 V",
+      "terminals": [
+        {
+          "label": "+",
+          "description": "Top terminal of the battery",
+          "position": {
+            "x": 0.235,
+            "y": 0.5
+          }
+        },
+        {
+          "label": "−",
+          "description": "Bottom terminal of the battery",
+          "position": {
+            "x": 0.235,
+            "y": 0.792
+          }
+        }
+      ],
+      "confidence": 0.95,
+      "notes": null,
+      "center": {
+        "x": 0.235,
+        "y": 0.646
+      },
+      "bbox": {
+        "x": 0.22,
+        "y": 0.5,
+        "width": 0.03,
+        "height": 0.292
+      },
+      "orientation": 90.0,
+      "status": "confirmed"
+    },
+    {
+      "id": "R1",
+      "type": "resistor",
+      "visible_value": "4 Ω",
+      "terminals": [
+        {
+          "label": "A",
+          "description": "Left terminal of the resistor",
+          "position": {
+            "x": 0.444,
+            "y": 0.355
+          }
+        },
+        {
+          "label": "B",
+          "description": "Right terminal of the resistor",
+          "position": {
+            "x": 0.556,
+            "y": 0.355
+          }
+        }
+      ],
+      "confidence": 0.95,
+      "notes": null,
+      "center": {
+        "x": 0.5,
+        "y": 0.355
+      },
+      "bbox": {
+        "x": 0.444,
+        "y": 0.33,
+        "width": 0.112,
+        "height": 0.05
+      },
+      "orientation": 0.0,
+      "status": "confirmed"
+    }
+  ],
+  "connections": [
+    {
+      "from_component": "V1",
+      "from_terminal": "+",
+      "to_component": "R1",
+      "to_terminal": "A",
+      "notes": null,
+      "confidence": 0.95,
+      "status": "confirmed"
+    },
+    {
+      "from_component": "R1",
+      "from_terminal": "B",
+      "to_component": "V1",
+      "to_terminal": "−",
+      "notes": "Connected via right wire and bottom wire",
+      "confidence": 0.95,
+      "status": "confirmed"
+    }
+  ],
+  "wires": [
+    {
+      "id": "W1",
+      "points": [
+        {
+          "x": 0.235,
+          "y": 0.5
+        },
+        {
+          "x": 0.444,
+          "y": 0.355
+        }
+      ],
+      "from_component": "V1",
+      "from_terminal": "+",
+      "to_component": "R1",
+      "to_terminal": "A",
+      "is_junction": true,
+      "is_crossing": false,
+      "confidence": 0.95
+    },
+    {
+      "id": "W2",
+      "points": [
+        {
+          "x": 0.556,
+          "y": 0.355
+        },
+        {
+          "x": 0.765,
+          "y": 0.355
+        },
+        {
+          "x": 0.765,
+          "y": 0.792
+        }
+      ],
+      "from_component": "R1",
+      "from_terminal": "B",
+      "to_component": "V1",
+      "to_terminal": "−",
+      "is_junction": true,
+      "is_crossing": false,
+      "confidence": 0.95
+    },
+    {
+      "id": "W3",
+      "points": [
+        {
+          "x": 0.765,
+          "y": 0.792
+        },
+        {
+          "x": 0.235,
+          "y": 0.792
+        }
+      ],
+      "from_component": "V1",
+      "from_terminal": "−",
+      "to_component": "V1",
+      "to_terminal": "−",
+      "is_junction": true,
+      "is_crossing": false,
+      "confidence": 0.95
+    }
+  ],
+  "junctions": [
+    {
+      "id": "J1",
+      "position": {
+        "x": 0.235,
+        "y": 0.5
+      },
+      "members": [
+        "V1.+"
+      ]
+    },
+    {
+      "id": "J2",
+      "position": {
+        "x": 0.235,
+        "y": 0.792
+      },
+      "members": [
+        "V1.−"
+      ]
+    },
+    {
+      "id": "J3",
+      "position": {
+        "x": 0.765,
+        "y": 0.355
+      },
+      "members": [
+        "R1.B"
+      ]
+    },
+    {
+      "id": "J4",
+      "position": {
+        "x": 0.765,
+        "y": 0.792
+      },
+      "members": []
+    }
+  ],
+  "nodes": [
+    {
+      "id": "N0",
+      "members": [
+        "V1.+",
+        "R1.A"
+      ]
+    },
+    {
+      "id": "N1",
+      "members": [
+        "V1.−",
+        "R1.B"
+      ]
+    }
+  ],
+  "image_width": 640,
+  "image_height": 400,
+  "question_text": null,
+  "unclear_details": [],
+  "general_notes": "A simple single-loop circuit containing a 12 V voltage source and a 4 ohm resistor.",
+  "reconstruction_incomplete": false
+}

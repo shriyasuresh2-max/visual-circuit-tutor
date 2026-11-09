@@ -1,4 +1,4 @@
-﻿node_modules/
+node_modules/
 dist/
 .env
 .env.*
@@ -6,3 +6,11 @@ dist/
 .DS_Store
 
 .vscode/
+
+# Backend — never commit secrets or virtual environments
+backend/.env
+backend/.venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
