@@ -947,17 +947,49 @@ function nudgeAnchor(point, context) {
  * separated from other anchors. They are still nudged if that position would
  * draw a false junction (on a symbol, on a foreign terminal or on another
  * net's wire) or would collapse one of their own member wires.
+ *
+ * Priority rule: locked (user-dragged) anchors are settled FIRST, without
+ * checking clearance against passive anchors. Passive anchors are settled
+ * SECOND and must yield to the already-committed locked positions. This
+ * ensures the editor never silently overrides the user's intended drop point.
+ *
+ * When multiple junctions are locked simultaneously (the user has dragged
+ * more than one on separate gestures — nodeEdits accumulates across drags),
+ * each locked anchor is checked against the positions already committed by
+ * earlier locked anchors in plan order. The first locked anchor retains its
+ * requested position; subsequent ones are nudged only if they would otherwise
+ * overlap an already-settled locked anchor. No passive anchor is ever in
+ * `taken` during Pass 1, so passives can never displace a locked anchor.
  */
 function refineAnchors(plan, comps, bounds, locked) {
-  // Anchors the user placed are settled last, so a passive anchor yields to a
-  // dragged junction instead of nudging the junction away from where it was
-  // put. `sort` is stable, so each group keeps the layout's own node order and
-  // the result stays deterministic.
-  const anchors = [...plan.values()]
-    .filter((info) => info.point)
-    .sort((a, b) => (locked?.has(a.id) ? 1 : 0) - (locked?.has(b.id) ? 1 : 0));
-  const taken = [];
-  for (const info of anchors) {
+  const all = [...plan.values()].filter((info) => info.point);
+
+  // --- Pass 1: settle locked (user-dragged) rail anchors first. ---
+  // Each locked anchor is checked against previously-committed locked
+  // positions only — never against passive anchors. Plan-iteration order
+  // (stable Map insertion order) makes the settlement deterministic: the
+  // first locked anchor in plan order wins its exact requested position;
+  // a later locked anchor that conflicts is nudged by the smallest ring.
+  const lockedPositions = [];
+  for (const info of all) {
+    if (!info.isRail || !locked?.has(info.id)) continue;
+    info.point = nudgeAnchor(info.point, {
+      members: info.members,
+      comps,
+      bounds,
+      taken: [...lockedPositions], // yield to earlier locked anchors only
+    });
+    lockedPositions.push(info.point);
+  }
+
+  // --- Pass 2: settle passive rail anchors, yielding to locked positions. ---
+  // The `taken` list starts with the locked positions so a passive anchor
+  // is nudged away from them, not the other way around.
+  const taken = [...lockedPositions];
+  // Non-rail passive anchors are not nudged but still register in `taken`.
+  // Process in stable plan order so the result stays deterministic.
+  for (const info of all) {
+    if (locked?.has(info.id)) continue; // already settled above
     if (!info.isRail) {
       taken.push(info.point);
       continue;
