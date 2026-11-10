@@ -1,5 +1,14 @@
 import React, { useMemo, useState, useRef, useCallback, useEffect } from 'react';
-import { layoutCircuit, applyEditToComponent, rerouteLayout } from '../circuit/circuitLayout.js';
+import {
+  layoutCircuit,
+  applyEditToComponent,
+  rerouteLayout,
+  wireSegmentAt,
+  wireOverrideKey,
+  findSnapTarget,
+  snapDistanceForZoom,
+  snapTargetLabel,
+} from '../circuit/circuitLayout.js';
 
 /**
  * Technical SVG Schematic of a DC Series Circuit
@@ -305,6 +314,18 @@ function renderSymbol(type, color, aIsPos, bIsPos) {
 const SNAP = 10;
 function snap(v) { return Math.round(v / SNAP) * SNAP; }
 
+// How close to a wire segment a pointer must be to grab it.
+const WIRE_SEGMENT_TOLERANCE = 10;
+// A press without at least this much movement is a click (select only), so a
+// slightly shaky click on a wire never nudges it onto the next grid line.
+const WIRE_DRAG_THRESHOLD = 5;
+// A wire's endpoint handles are this big on screen; they only exist while that
+// wire is selected, so they never steal a click from a component or junction.
+const ENDPOINT_HANDLE_HIT = 10;
+// Colour of the snap preview. Deliberately outside the wire/junction palette
+// (indigo #818cf8, blue #38bdf8) so a preview can never read as a real join.
+const SNAP_PREVIEW_COLOR = '#f59e0b';
+
 function ReconstructedDiagram({ layout, analysisResult }) {
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const [selectedId, setSelectedId] = useState(null);     // component ID
@@ -312,6 +333,13 @@ function ReconstructedDiagram({ layout, analysisResult }) {
   const [selectedWire, setSelectedWire] = useState(null); // wire ID
   const [edits, setEdits] = useState(() => new Map());     // compId → {center?, axis?}
   const [nodeEdits, setNodeEdits] = useState(() => new Map()); // nodeId → {x, y}
+  // Wire segment overrides: wireKey → [{ dir, coord, span }]. Geometry only —
+  // terminal positions, node membership and connections are never touched.
+  const [wireEdits, setWireEdits] = useState(() => new Map());
+  const [wireDrag, setWireDrag] = useState(null);          // { dir } while dragging a segment
+  // Endpoint preview: geometry only. Nothing here is written back to the
+  // layout or the graph — the user is looking at where an end *could* go.
+  const [endpointDrag, setEndpointDrag] = useState(null);   // { wireId, end, from, point, snap }
   const dragRef = useRef({ mode: 'none', x: 0, y: 0, ox: 0, oy: 0, compId: null, nodeId: null, startCenter: null, startNode: null });
   const svgRef = useRef(null);
   const viewportRef = useRef(null);
@@ -319,13 +347,17 @@ function ReconstructedDiagram({ layout, analysisResult }) {
   // --- Apply visual edits (component move/rotate + node move) and re-route wires ---
   const editedLayout = useMemo(() => {
     if (!layout || !layout.ok) return layout;
-    if (edits.size === 0 && nodeEdits.size === 0) return layout;
+    if (edits.size === 0 && nodeEdits.size === 0 && wireEdits.size === 0) return layout;
     const components = layout.components.map((c) => {
       const edit = edits.get(c.id);
-      return edit ? applyEditToComponent(c, edit) : c;
+      return edit ? applyEditToComponent(c, edit, layout.bounds) : c;
     });
-    return rerouteLayout({ ...layout, components }, nodeEdits.size > 0 ? nodeEdits : null);
-  }, [layout, edits, nodeEdits]);
+    return rerouteLayout(
+      { ...layout, components },
+      nodeEdits.size > 0 ? nodeEdits : null,
+      wireEdits.size > 0 ? wireEdits : null,
+    );
+  }, [layout, edits, nodeEdits, wireEdits]);
 
   // --- Zoom controls (button-only; wheel zoom was removed) -------------
   const onZoom = useCallback((factor) => {
@@ -374,6 +406,10 @@ function ReconstructedDiagram({ layout, analysisResult }) {
     const inside = raw.filter((el) => el && (!svg || svg.contains(el)));
     const hits = inside.length > 0 ? inside : [e.target];
 
+    // Endpoint handles are only drawn for the selected wire and sit above
+    // everything else, so check them before classifying the hit.
+    const endHandleEl = hits.map((el) => el?.closest?.('[data-wire-end]')).find(Boolean) ?? null;
+
     const isLeadHitbox = (el) => {
       if (!el || el.localName !== 'rect') return false;
       if (el.getAttribute?.('fill') !== 'transparent') return false;
@@ -413,6 +449,33 @@ function ReconstructedDiagram({ layout, analysisResult }) {
       break;
     }
 
+    // 0. Wire endpoint handle: preview where this end could snap to. No
+    //    geometry and no connection is committed by this drag.
+    if (endHandleEl) {
+      const wireId = endHandleEl.getAttribute('data-wire-id');
+      const wire = (editedLayout?.allWires || editedLayout?.wires || []).find((w) => w.id === wireId);
+      if (wire && wire.points?.length >= 2) {
+        const end = endHandleEl.getAttribute('data-wire-end') === 'start' ? 'start' : 'end';
+        const from = end === 'start' ? wire.points[0] : wire.points[wire.points.length - 1];
+        dragRef.current = {
+          mode: 'wireEnd',
+          wireId,
+          wireKey: wireOverrideKey(wire),
+          end,
+          from: { x: from.x, y: from.y },
+        };
+        setEndpointDrag({
+          wireId,
+          end,
+          from: { x: from.x, y: from.y },
+          point: { x: from.x, y: from.y },
+          snap: null,
+        });
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+        return;
+      }
+    }
+
     // 1. Junction hit circle. Clear any wire selection, then drag when the
     //    id matches a layout node. An unmatched id falls through to pan, as before.
     if (nodeEl) {
@@ -437,6 +500,28 @@ function ReconstructedDiagram({ layout, analysisResult }) {
       setSelectedWire(wireId);
       setSelectedId(null);
       setSelectedNode(null);
+
+      // Any segment under the pointer can be dragged, including an L-shaped
+      // wire's two arms. Endpoint-touching segments gain a bend pair, so the
+      // terminal, junction anchor or open stub they attach to never moves.
+      const wire = (editedLayout?.allWires || editedLayout?.wires || []).find((w) => w.id === wireId);
+      const segment = wire
+        ? wireSegmentAt(wire.points, clientToSvg(e.clientX, e.clientY), WIRE_SEGMENT_TOLERANCE)
+        : null;
+      const wireKey = wire ? wireOverrideKey(wire) : null;
+      if (segment && wireKey) {
+        dragRef.current = {
+          mode: 'wire',
+          wireKey,
+          dir: segment.dir,
+          span: segment.span,
+          end: segment.end,
+          startCoord: segment.coord,
+          startClient: { x: e.clientX, y: e.clientY },
+        };
+        setWireDrag({ dir: segment.dir });
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+      }
       return;
     } else {
       // 3. Component symbol, or the lead box where no wire is underneath.
@@ -466,7 +551,7 @@ function ReconstructedDiagram({ layout, analysisResult }) {
     setSelectedWire(null);
     dragRef.current = { mode: 'pan', x: e.clientX, y: e.clientY, ox: view.x, oy: view.y };
     e.currentTarget.setPointerCapture?.(e.pointerId);
-  }, [view.x, view.y, editedLayout]);
+  }, [view.x, view.y, editedLayout, clientToSvg]);
 
   const onPointerMove = useCallback((e) => {
     const drag = dragRef.current;
@@ -498,20 +583,60 @@ function ReconstructedDiagram({ layout, analysisResult }) {
         next.set(drag.nodeId, { x: snap(drag.startNode.x + dx), y: snap(drag.startNode.y + dy) });
         return next;
       });
+    } else if (drag.mode === 'wireEnd') {
+      // Preview only: the endpoint follows the pointer as a ghost, and snaps to
+      // the nearest target inside the zoom-adjusted radius. Nothing is stored.
+      const cur = clientToSvg(e.clientX, e.clientY);
+      const bounds = editedLayout?.bounds;
+      const point = {
+        x: bounds ? Math.min(bounds.width, Math.max(0, cur.x)) : cur.x,
+        y: bounds ? Math.min(bounds.height, Math.max(0, cur.y)) : cur.y,
+      };
+      const snap = findSnapTarget(editedLayout, point, {
+        maxDistance: snapDistanceForZoom(view.k),
+        ignoreWireKeys: [drag.wireKey],
+        ignorePoints: [drag.from],
+      });
+      setEndpointDrag((prev) => (prev ? { ...prev, point, snap } : prev));
+    } else if (drag.mode === 'wire') {
+      // Horizontal segments move vertically and vice versa; the coordinate is
+      // snapped and stored per wire identity + segment span.
+      const cur = clientToSvg(e.clientX, e.clientY);
+      const start = clientToSvg(drag.startClient.x, drag.startClient.y);
+      const delta = drag.dir === 'h' ? cur.y - start.y : cur.x - start.x;
+      const dragged = Math.abs(delta) >= WIRE_DRAG_THRESHOLD;
+      const coord = snap(drag.startCoord + delta);
+      const { dir, span, end, wireKey } = drag;
+      setWireEdits((prev) => {
+        const kept = (prev.get(wireKey) || []).filter(
+          (o) => o.dir !== dir || Math.abs(o.span[0] - span[0]) > 0.5 || Math.abs(o.span[1] - span[1]) > 0.5,
+        );
+        const next = new Map(prev);
+        if (dragged && Math.abs(coord - drag.startCoord) >= 0.5) {
+          kept.push({ dir, coord, span: [span[0], span[1]], end });
+        }
+        if (kept.length > 0) next.set(wireKey, kept);
+        else next.delete(wireKey);
+        return next;
+      });
     }
-  }, [view.k, clientToSvg]);
+  }, [view.k, clientToSvg, editedLayout]);
 
   const onPointerUp = useCallback(() => {
     dragRef.current = { mode: 'none' };
+    setWireDrag(null);
+    setEndpointDrag(null);
   }, []);
 
   // Clear all visual edits when a new circuit is loaded
   useEffect(() => {
     setEdits(new Map());
     setNodeEdits(new Map());
+    setWireEdits(new Map());
     setSelectedId(null);
     setSelectedNode(null);
     setSelectedWire(null);
+    setEndpointDrag(null);
   }, [layout]);
 
   if (!layout || !layout.ok) {
@@ -586,7 +711,19 @@ function ReconstructedDiagram({ layout, analysisResult }) {
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerLeave={onPointerUp}
-          style={{ cursor: dragRef.current.mode === 'pan' ? 'grabbing' : (dragRef.current.mode === 'component' || dragRef.current.mode === 'node') ? 'move' : 'grab', touchAction: 'none' }}
+          onPointerCancel={onPointerUp}
+          style={{
+            cursor: endpointDrag
+              ? 'crosshair'
+              : wireDrag
+              ? (wireDrag.dir === 'h' ? 'ns-resize' : 'ew-resize')
+              : dragRef.current.mode === 'pan'
+                ? 'grabbing'
+                : (dragRef.current.mode === 'component' || dragRef.current.mode === 'node')
+                  ? 'move'
+                  : 'grab',
+            touchAction: 'none',
+          }}
         >
           <defs>
             <pattern id="rc-grid" width="20" height="20" patternUnits="userSpaceOnUse">
@@ -661,18 +798,23 @@ function ReconstructedDiagram({ layout, analysisResult }) {
           {/* Junction dots — one per 3+-member electrical node, drawn exactly at
               the rail anchor where its member wires meet. Each junction has a
               large invisible hit circle for easy grabbing. */}
-          {junctions.filter((j) => j.isJunction !== false).map((j) => (
-            <g key={`jct-${j.id}`} data-node-id={j.id} style={{ cursor: 'move' }}>
-              {/* Invisible hit area — much larger than the visible dot */}
-              <circle cx={j.x} cy={j.y} r="16" fill="transparent" stroke="none" />
-              {/* Selection ring */}
-              {selectedNode === j.id && (
-                <circle cx={j.x} cy={j.y} r="11" fill="none" stroke="#38bdf8" strokeWidth="1.5" strokeDasharray="3 2" opacity="0.8" />
-              )}
-              {/* Visible junction dot */}
-              <circle cx={j.x} cy={j.y} r="5" fill={selectedNode === j.id ? '#38bdf8' : '#818cf8'} stroke="#0c111a" strokeWidth="1.5" />
-            </g>
-          ))}
+          {junctions.filter((j) => j.isJunction !== false).map((j) => {
+            // Interaction is keyed on the electrical node id (N0…), never on the
+            // visual junction id (J1…), so a dot resolves to layout.nodes.
+            const nodeId = j.nodeId ?? j.id;
+            return (
+              <g key={`jct-${j.id}`} data-node-id={nodeId} style={{ cursor: 'move' }}>
+                {/* Invisible hit area — much larger than the visible dot */}
+                <circle cx={j.x} cy={j.y} r="16" fill="transparent" stroke="none" />
+                {/* Selection ring */}
+                {selectedNode === nodeId && (
+                  <circle cx={j.x} cy={j.y} r="11" fill="none" stroke="#38bdf8" strokeWidth="1.5" strokeDasharray="3 2" opacity="0.8" />
+                )}
+                {/* Visible junction dot */}
+                <circle cx={j.x} cy={j.y} r="5" fill={selectedNode === nodeId ? '#38bdf8' : '#818cf8'} stroke="#0c111a" strokeWidth="1.5" />
+              </g>
+            );
+          })}
 
           {/* Node labels */}
           {nodes.map((n) => (
@@ -680,6 +822,121 @@ function ReconstructedDiagram({ layout, analysisResult }) {
               {n.id}
             </text>
           ))}
+
+          {/* Wire endpoint handles. Rendered only for the selected wire and on
+              top, so no click on a component or junction changes behaviour. */}
+          {(() => {
+            const wire = selectedWire
+              ? (displayWires || []).find((w) => w.id === selectedWire)
+              : null;
+            if (!wire?.points || wire.points.length < 2) return null;
+            const dragging = endpointDrag?.wireId === wire.id ? endpointDrag.end : null;
+            return [
+              { end: 'start', at: wire.points[0] },
+              { end: 'end', at: wire.points[wire.points.length - 1] },
+            ].map(({ end, at }) => (
+              <g
+                key={`wire-end-${wire.id}-${end}`}
+                data-wire-end={end}
+                data-wire-id={wire.id}
+                style={{ cursor: 'crosshair' }}
+              >
+                <circle cx={at.x} cy={at.y} r={ENDPOINT_HANDLE_HIT} fill="transparent" stroke="none" />
+                <rect
+                  x={at.x - 3.5}
+                  y={at.y - 3.5}
+                  width="7"
+                  height="7"
+                  rx="1"
+                  fill="#0c111a"
+                  stroke={dragging === end ? SNAP_PREVIEW_COLOR : '#38bdf8'}
+                  strokeWidth="1.5"
+                  pointerEvents="none"
+                />
+              </g>
+            ));
+          })()}
+
+          {/* Snap preview for a dragged wire endpoint. Dashed amber guide and a
+              hollow reticle: visually distinct from the filled junction dot,
+              and purely visual — it commits no geometry and no connection. */}
+          {endpointDrag && (() => {
+            const target = endpointDrag.snap;
+            const at = target ? target.point : endpointDrag.point;
+            const tick = (dx, dy) => (
+              <line
+                x1={target.point.x + dx * 6}
+                y1={target.point.y + dy * 6}
+                x2={target.point.x + dx * 13}
+                y2={target.point.y + dy * 13}
+                stroke={SNAP_PREVIEW_COLOR}
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            );
+            return (
+              <g
+                className="rc-wire-snap"
+                data-snap-type={target ? target.type : 'none'}
+                data-snap-target={target ? snapTargetLabel(target) : ''}
+                pointerEvents="none"
+              >
+                {target?.type === 'wire' && target.segment && (
+                  <line
+                    x1={target.segment.a.x}
+                    y1={target.segment.a.y}
+                    x2={target.segment.b.x}
+                    y2={target.segment.b.y}
+                    stroke={SNAP_PREVIEW_COLOR}
+                    strokeWidth="4"
+                    strokeLinecap="round"
+                    opacity="0.22"
+                  />
+                )}
+                <line
+                  x1={endpointDrag.from.x}
+                  y1={endpointDrag.from.y}
+                  x2={at.x}
+                  y2={at.y}
+                  stroke={SNAP_PREVIEW_COLOR}
+                  strokeWidth="1.5"
+                  strokeDasharray="5 4"
+                  opacity="0.9"
+                />
+                <circle
+                  cx={at.x}
+                  cy={at.y}
+                  r="3"
+                  fill="#0c111a"
+                  stroke={SNAP_PREVIEW_COLOR}
+                  strokeWidth="1.5"
+                />
+                {target && (
+                  <g>
+                    <circle
+                      cx={target.point.x}
+                      cy={target.point.y}
+                      r="9"
+                      fill="none"
+                      stroke={SNAP_PREVIEW_COLOR}
+                      strokeWidth="1.5"
+                      strokeDasharray="4 3"
+                    />
+                    {tick(-1, 0)}{tick(1, 0)}{tick(0, -1)}{tick(0, 1)}
+                    <text
+                      x={target.point.x + 12}
+                      y={target.point.y - 10}
+                      fill={SNAP_PREVIEW_COLOR}
+                      fontSize="8.5"
+                      fontFamily="var(--font-mono)"
+                    >
+                      {snapTargetLabel(target)}
+                    </text>
+                  </g>
+                )}
+              </g>
+            );
+          })()}
         </svg>
       </div>
 

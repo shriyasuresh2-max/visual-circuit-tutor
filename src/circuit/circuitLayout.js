@@ -18,9 +18,37 @@ import {
   ensureTerminals,
   SOURCE_TYPES,
 } from './electricalGraph.js';
-import { layoutSchematic, validateSchematic, applyEditToComponent, rerouteLayout } from './schematicLayout.js';
+import {
+  layoutSchematic,
+  validateSchematic,
+  applyEditToComponent,
+  rerouteLayout,
+  interiorSegmentAt,
+  wireSegmentAt,
+  wireOverrideKey,
+} from './schematicLayout.js';
+import {
+  findSnapTarget,
+  collectSnapTargets,
+  snapDistanceForZoom,
+  snapTargetLabel,
+} from './wireSnap.js';
 
-export { computeNodes, findCycle, ensureTerminals, SOURCE_TYPES, applyEditToComponent, rerouteLayout };
+export {
+  computeNodes,
+  findCycle,
+  ensureTerminals,
+  SOURCE_TYPES,
+  applyEditToComponent,
+  rerouteLayout,
+  interiorSegmentAt,
+  wireSegmentAt,
+  wireOverrideKey,
+  findSnapTarget,
+  collectSnapTargets,
+  snapDistanceForZoom,
+  snapTargetLabel,
+};
 
 /**
  * Convert an analysis result into positioned, renderable circuit data.

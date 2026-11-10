@@ -39,6 +39,7 @@ import {
   findCycle,
   computeNodes,
   normalizeLabel,
+  validateGraph,
 } from './electricalGraph.js';
 
 /* ------------------------------------------------------------------ *\
@@ -54,6 +55,11 @@ const LEAD_GAP = 14;      // visible lead wire that must remain on each side
 const EPS = 0.75;
 const LABEL_W = 54;
 const LABEL_H = 30;
+const EDGE_PAD = 8;        // clearance kept between a component and the canvas edge
+const ANCHOR_CLEARANCE = 16; // a rail anchor keeps this far from every terminal
+const ANCHOR_NUDGE = 34;   // step used when an anchor has to be moved off something
+const INCOMPLETE_MESSAGE = 'Reconstruction is incomplete — some terminals are not connected to anything in the image.';
+const APPROX_MESSAGE = 'Approximate layout — original image geometry was not available. The arrangement may not match the uploaded circuit.';
 
 /** Half-length of each symbol in its own local coordinates (must match the SVG). */
 const SYMBOL_HALF = {
@@ -752,13 +758,31 @@ function repositionLabels(placed, wires, bounds) {
   }
 }
 
+/**
+ * Axis-aligned half extents of the whole drawn component (leads included), so
+ * callers can keep every terminal inside the canvas.
+ */
+function componentExtents(comp) {
+  return {
+    x: Math.abs(comp.axis.x) * comp.halfSpan + Math.abs(comp.axis.y) * comp.symbolPerp,
+    y: Math.abs(comp.axis.y) * comp.halfSpan + Math.abs(comp.axis.x) * comp.symbolPerp,
+  };
+}
+
+/** Clamp a component centre so its drawing stays inside the canvas. */
+function clampCenterToBounds(comp, center, bounds) {
+  if (!bounds || !Number.isFinite(bounds.width) || !Number.isFinite(bounds.height)) {
+    return { x: center.x, y: center.y };
+  }
+  const extent = componentExtents(comp);
+  return {
+    x: clamp(center.x, extent.x + EDGE_PAD, Math.max(extent.x + EDGE_PAD, bounds.width - extent.x - EDGE_PAD)),
+    y: clamp(center.y, extent.y + EDGE_PAD, Math.max(extent.y + EDGE_PAD, bounds.height - extent.y - EDGE_PAD)),
+  };
+}
+
 function refreshComponentGeometry(comp, bounds) {
-  const extentX = Math.abs(comp.axis.x) * comp.halfSpan + Math.abs(comp.axis.y) * comp.symbolPerp;
-  const extentY = Math.abs(comp.axis.y) * comp.halfSpan + Math.abs(comp.axis.x) * comp.symbolPerp;
-  comp.center = roundPoint({
-    x: clamp(comp.center.x, extentX + 8, bounds.width - extentX - 8),
-    y: clamp(comp.center.y, extentY + 8, bounds.height - extentY - 8),
-  });
+  comp.center = roundPoint(clampCenterToBounds(comp, comp.center, bounds));
   comp.x1 = Math.round(comp.center.x - comp.axis.x * comp.halfSpan);
   comp.y1 = Math.round(comp.center.y - comp.axis.y * comp.halfSpan);
   comp.x2 = Math.round(comp.center.x + comp.axis.x * comp.halfSpan);
@@ -834,6 +858,150 @@ function refreshAnchors(plan, placed) {
 }
 
 /* ------------------------------------------------------------------ *\
+ * Stage 1b — anchor refinement for edited layouts
+ *
+ * When the user moves a component, its node's anchor is recomputed from the
+ * new terminal positions. A raw centroid can land inside a symbol, on an
+ * unrelated terminal or on another net's conductor, and a terminal that lands
+ * on the anchor makes its own wire collapse to zero length. These helpers
+ * keep an anchor readable without touching node membership: the electrical
+ * graph is never consulted or modified, only the drawn anchor point moves.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Is `point` a usable rail anchor? It must stay inside the canvas, outside
+ * every component's drawing box, clear of unrelated terminals, and far enough
+ * from the node's own terminals that no member wire collapses to nothing.
+ */
+function anchorPointIsClear(point, { members, comps, bounds, avoidSegments = [], taken = [] }) {
+  if (!bounds) return true;
+  if (point.x < EDGE_PAD || point.y < EDGE_PAD) return false;
+  if (point.x > bounds.width - EDGE_PAD || point.y > bounds.height - EDGE_PAD) return false;
+
+  const memberKeys = new Set(members.map((m) => keyOf(m)));
+  for (const comp of comps) {
+    const box = comp.drawBox;
+    if (
+      box &&
+      point.x > box.minX - 2 && point.x < box.maxX + 2 &&
+      point.y > box.minY - 2 && point.y < box.maxY + 2
+    ) {
+      return false;
+    }
+    for (const t of comp.terminals || []) {
+      const isMember = memberKeys.has(terminalKey(comp.id, t.label));
+      const limit = isMember ? ANCHOR_CLEARANCE : 2;
+      if (dist(point, { x: t.x, y: t.y }) < limit) return false;
+    }
+  }
+
+  for (const [a, b] of avoidSegments) {
+    if (pointSegmentDistance(point, a, b) <= 4) return false;
+  }
+  for (const other of taken) {
+    if (dist(point, other) < ANCHOR_CLEARANCE) return false;
+  }
+  return true;
+}
+
+/**
+ * Nearest usable point to `point`, searched on growing square rings so the
+ * result is deterministic and never circuit-specific.
+ */
+function nudgeAnchor(point, context) {
+  if (anchorPointIsClear(point, context)) return roundPoint(point);
+  const dirs = [
+    { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }, { x: -1, y: 0 },
+    { x: 0, y: -1 }, { x: -1, y: -1 }, { x: 1, y: -1 }, { x: -1, y: 1 },
+  ];
+  for (let ring = 1; ring <= 6; ring += 1) {
+    for (const d of dirs) {
+      const cand = roundPoint({
+        x: point.x + d.x * ANCHOR_NUDGE * ring,
+        y: point.y + d.y * ANCHOR_NUDGE * ring,
+      });
+      if (anchorPointIsClear(cand, context)) return cand;
+    }
+  }
+  return roundPoint(point);
+}
+
+/**
+ * Refine every anchor of an edited layout: keep rail anchors out of symbols and
+ * off terminals, keep each rail anchor at least `ANCHOR_CLEARANCE` from its own
+ * member terminals so every member keeps a visible wire, and keep anchors from
+ * landing on top of one another.
+ *
+ * [[anchor-stability]] Anchors of an edited layout come from real geometry
+ * (the centroid of the node's own terminals), so this pass must not impose the
+ * topology-stage spacing from `separateAnchors` on them: that constant exists
+ * because inventing node positions for a graph has no geometric input, whereas
+ * an existing drawing already says where every node is. Re-applying it moved
+ * junctions the user never touched whenever any wire was rerouted. Every
+ * genuine conflict is still resolved below by `nudgeAnchor`, which moves an
+ * anchor only when it would draw something false (inside a symbol, on a
+ * terminal, on another net's conductor, or closer than the dot clearance to an
+ * already-settled anchor) — and only by the smallest ring that clears it.
+ *
+ * Anchors the user dragged (junctions) keep their position: they are never
+ * separated from other anchors. They are still nudged if that position would
+ * draw a false junction (on a symbol, on a foreign terminal or on another
+ * net's wire) or would collapse one of their own member wires.
+ */
+function refineAnchors(plan, comps, bounds, locked) {
+  // Anchors the user placed are settled last, so a passive anchor yields to a
+  // dragged junction instead of nudging the junction away from where it was
+  // put. `sort` is stable, so each group keeps the layout's own node order and
+  // the result stays deterministic.
+  const anchors = [...plan.values()]
+    .filter((info) => info.point)
+    .sort((a, b) => (locked?.has(a.id) ? 1 : 0) - (locked?.has(b.id) ? 1 : 0));
+  const taken = [];
+  for (const info of anchors) {
+    if (!info.isRail) {
+      taken.push(info.point);
+      continue;
+    }
+    info.point = nudgeAnchor(info.point, {
+      members: info.members,
+      comps,
+      bounds,
+      taken: [...taken],
+    });
+    taken.push(info.point);
+  }
+}
+
+/**
+ * A rail anchor must not sit on another net's conductor: that reads as a
+ * junction the circuit does not have. Nudge any such anchor and report whether
+ * anything moved, so routing can be repeated against the new anchor positions.
+ */
+function avoidForeignWireAtAnchors(plan, wires, comps, bounds, locked) {
+  let moved = false;
+  for (const info of plan.values()) {
+    if (!info.isRail || !info.point || locked?.has(info.id)) continue;
+    const foreign = wires.filter((w) => w.node !== info.id);
+    const foreignSegments = foreign.flatMap((w) => segmentsOf(w.points));
+    const onForeignWire = foreignSegments.some(
+      ([a, b]) => pointSegmentDistance(info.point, a, b) <= 4,
+    );
+    if (!onForeignWire) continue;
+    const next = nudgeAnchor(info.point, {
+      members: info.members,
+      comps,
+      bounds,
+      avoidSegments: foreignSegments,
+    });
+    if (dist(next, info.point) > 0.5) {
+      info.point = next;
+      moved = true;
+    }
+  }
+  return moved;
+}
+
+/* ------------------------------------------------------------------ *\
  * Stage 3 — orthogonal wire routing
  * ------------------------------------------------------------------ */
 
@@ -849,6 +1017,18 @@ function segmentHitsBox(a, b, box) {
   const minY = Math.min(a.y, b.y);
   const maxY = Math.max(a.y, b.y);
   return maxX > box.minX && minX < box.maxX && maxY > box.minY && minY < box.maxY;
+}
+
+/** Perpendicular distance from a point to an axis-aligned segment. */
+function pointSegmentDistance(p, a, b) {
+  const minX = Math.min(a.x, b.x) - EPS;
+  const maxX = Math.max(a.x, b.x) + EPS;
+  const minY = Math.min(a.y, b.y) - EPS;
+  const maxY = Math.max(a.y, b.y) + EPS;
+  if (p.x < minX || p.x > maxX || p.y < minY || p.y > maxY) return Infinity;
+  if (Math.abs(a.y - b.y) <= EPS) return Math.abs(p.y - a.y);
+  if (Math.abs(a.x - b.x) <= EPS) return Math.abs(p.x - a.x);
+  return Infinity;
 }
 
 function segCrossPoint(a1, a2, b1, b2) {
@@ -1054,6 +1234,9 @@ function buildJunctions(plan) {
     if (!info.isRail || !info.point) continue;
     junctions.push({
       id: `J${idx}`,
+      // The electrical node this dot draws. Renderers must key interaction on
+      // `nodeId`; the visual `J#` id is only a stable React key / display name.
+      nodeId: info.id,
       x: info.point.x,
       y: info.point.y,
       members: info.members.map((m) => keyOf(m)),
@@ -1408,9 +1591,9 @@ export function layoutSchematic(analysis) {
     Boolean(graph.incomplete);
 
   const message = incomplete
-    ? 'Reconstruction is incomplete — some terminals are not connected to anything in the image.'
+    ? INCOMPLETE_MESSAGE
     : !useGeometry
-      ? 'Approximate layout — original image geometry was not available. The arrangement may not match the uploaded circuit.'
+      ? APPROX_MESSAGE
       : null;
 
   const layout = {
@@ -1451,17 +1634,322 @@ export function layoutSchematic(analysis) {
  * component ID and applies them through applyEditToComponent + rerouteLayout.
  * ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ *
+ * Manual wire-segment geometry overrides
+ *
+ * A wire's `points` are drawing geometry only: connectivity lives in the
+ * electrical graph and on each terminal's `node`. These helpers therefore
+ * move one segment while leaving both endpoints exactly where they were, so a
+ * drag can never create, split or merge an electrical node.
+ * ------------------------------------------------------------------ */
+
+/** Shortest a neighbouring segment may become when a segment is shifted. */
+const MIN_ADJACENT_LENGTH = 4;
+
+/**
+ * Stable identity of a wire across re-routes. The positional `id` (`W3`) is
+ * reassigned on every route, so overrides must never be keyed by it.
+ */
+export function wireOverrideKey(wire) {
+  if (!wire) return null;
+  return `${wire.node ?? ''}|${wire.from ?? ''}|${wire.to ?? ''}`;
+}
+
+/**
+ * Find the axis-aligned polyline segment nearest to `point`.
+ *
+ * `includeEnds` decides whether the first and last segment — the two that
+ * touch the wire's own endpoints — may be returned. They are handled
+ * differently by `shiftWireSegment` because moving one must not detach the
+ * terminal/junction/anchor it is drawn connected to.
+ *
+ * @param {Array<{x,y}>} points - wire polyline
+ * @param {{x,y}} point - pointer position in SVG space
+ * @param {number} tolerance - maximum perpendicular distance in px
+ * @param {boolean} includeEnds - consider the two endpoint-touching segments
+ * @returns {{index:number, dir:'h'|'v', coord:number, span:[number,number],
+ *   end:'start'|'end'|null}|null}
+ */
+function segmentAt(points, point, tolerance, includeEnds) {
+  if (!Array.isArray(points) || points.length < 2 || !point) return null;
+  const from = includeEnds ? 0 : 1;
+  const to = includeEnds ? points.length - 2 : points.length - 3;
+
+  let best = null;
+  for (let i = from; i <= to; i += 1) {
+    const a = points[i];
+    const b = points[i + 1];
+    const horizontal = a.y === b.y;
+    if (!horizontal && a.x !== b.x) continue; // diagonal segments are never draggable
+
+    const lo = horizontal ? Math.min(a.x, b.x) : Math.min(a.y, b.y);
+    const hi = horizontal ? Math.max(a.x, b.x) : Math.max(a.y, b.y);
+    const along = horizontal ? point.x : point.y;
+    if (along < lo - tolerance || along > hi + tolerance) continue;
+
+    const distance = Math.abs(horizontal ? point.y - a.y : point.x - a.x);
+    if (distance > tolerance) continue;
+
+    const better =
+      !best ||
+      distance < best.distance - 0.01 ||
+      (Math.abs(distance - best.distance) <= 0.01 && hi - lo > best.length);
+    if (better) {
+      best = {
+        index: i,
+        dir: horizontal ? 'h' : 'v',
+        coord: horizontal ? a.y : a.x,
+        span: [lo, hi],
+        distance,
+        length: hi - lo,
+      };
+    }
+  }
+
+  if (!best) return null;
+  const end = best.index === 0 ? 'start' : best.index === points.length - 2 ? 'end' : null;
+  return { index: best.index, dir: best.dir, coord: best.coord, span: best.span, end };
+}
+
+/**
+ * Find a draggable interior segment under `point`.
+ *
+ * Only segments with a bend at both ends qualify here. The first and last
+ * segment touch a component terminal, a junction anchor or an open-stub tip;
+ * `wireSegmentAt` handles those, leaving the endpoint itself fixed.
+ *
+ * @param {Array<{x,y}>} points - wire polyline
+ * @param {{x,y}} point - pointer position in SVG space
+ * @param {number} tolerance - maximum perpendicular distance in px
+ * @returns {{index:number, dir:'h'|'v', coord:number, span:[number,number]}|null}
+ */
+export function interiorSegmentAt(points, point, tolerance = 10) {
+  const segment = segmentAt(points, point, tolerance, false);
+  if (!segment) return null;
+  const { index, dir, coord, span } = segment;
+  return { index, dir, coord, span };
+}
+
+/**
+ * Find any draggable segment under `point`, including the two segments that
+ * touch the wire's endpoints. This is what the renderer hit-tests with: an
+ * L-shaped wire has only those two, so excluding them made it undraggable.
+ *
+ * @param {Array<{x,y}>} points - wire polyline
+ * @param {{x,y}} point - pointer position in SVG space
+ * @param {number} tolerance - maximum perpendicular distance in px
+ * @returns {{index:number, dir:'h'|'v', coord:number, span:[number,number],
+ *   end:'start'|'end'|null}|null}
+ */
+export function wireSegmentAt(points, point, tolerance = 10) {
+  return segmentAt(points, point, tolerance, true);
+}
+
+/** Shortest a segment of a rebuilt path may become. */
+const MIN_SEGMENT_LENGTH = 1;
+
+/** Drop consecutive duplicate points left behind by collinear simplification. */
+function trimDuplicatePoints(points) {
+  const out = [];
+  for (const p of points) {
+    const last = out[out.length - 1];
+    if (last && last.x === p.x && last.y === p.y) continue;
+    out.push(p);
+  }
+  return out;
+}
+
+/** Does the path cross over one of its own distant segments? */
+function pathCrossesItself(points) {
+  const segs = segmentsOf(points);
+  for (let i = 0; i < segs.length; i += 1) {
+    for (let j = i + 2; j < segs.length; j += 1) {
+      if (segCrossPoint(segs[i][0], segs[i][1], segs[j][0], segs[j][1])) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A shifted path is only usable if it still joins the same two points, stays
+ * orthogonal, has no collapsed segments and does not fold over itself.
+ */
+function isUsablePath(candidate, original) {
+  if (!Array.isArray(candidate) || candidate.length < 2) return false;
+
+  const srcFirst = original[0];
+  const srcLast = original[original.length - 1];
+  const first = candidate[0];
+  const tail = candidate[candidate.length - 1];
+  if (Math.abs(first.x - srcFirst.x) > EPS || Math.abs(first.y - srcFirst.y) > EPS) return false;
+  if (Math.abs(tail.x - srcLast.x) > EPS || Math.abs(tail.y - srcLast.y) > EPS) return false;
+
+  for (let i = 0; i < candidate.length - 1; i += 1) {
+    const a = candidate[i];
+    const b = candidate[i + 1];
+    if (a.x !== b.x && a.y !== b.y) return false; // diagonal segment
+    if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < MIN_SEGMENT_LENGTH) return false;
+  }
+
+  return !pathCrossesItself(candidate);
+}
+
+/**
+ * Move one segment perpendicular to its own direction.
+ *
+ * Interior segments simply move their two bend points and the neighbouring
+ * segments stretch. A segment that touches a wire endpoint (an L-shaped
+ * wire's two arms, or either end of a longer route) cannot slide, because
+ * that endpoint is what the wire is drawn connected to: the path instead
+ * gains a pair of bends, so the segment's own run moves to `coord` while the
+ * endpoint stays exactly where it was. Redundant corners are then simplified
+ * away.
+ *
+ * @returns {Array<{x,y}>|null} new points, or null when the segment is
+ *   diagonal, unchanged, would collapse a neighbour, or would produce an
+ *   invalid (non-orthogonal, degenerate or self-crossing) path.
+ */
+export function shiftWireSegment(points, index, coord) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  if (!Number.isFinite(coord)) return null;
+  if (!Number.isInteger(index) || index < 0 || index > points.length - 2) return null;
+
+  const a = points[index];
+  const b = points[index + 1];
+  const horizontal = a.y === b.y;
+  if (!horizontal && a.x !== b.x) return null;
+  if (Math.abs(coord - (horizontal ? a.y : a.x)) < 0.5) return null;
+
+  const endSegment = index === 0 || index === points.length - 2;
+
+  if (!endSegment) {
+    const before = points[index - 1];
+    const after = points[index + 2];
+    if (horizontal) {
+      if (Math.abs(before.y - coord) < MIN_ADJACENT_LENGTH) return null;
+      if (Math.abs(after.y - coord) < MIN_ADJACENT_LENGTH) return null;
+    } else {
+      if (Math.abs(before.x - coord) < MIN_ADJACENT_LENGTH) return null;
+      if (Math.abs(after.x - coord) < MIN_ADJACENT_LENGTH) return null;
+    }
+
+    const moved = points.map((p, i) => {
+      if (i !== index && i !== index + 1) return { x: p.x, y: p.y };
+      return horizontal ? { x: p.x, y: coord } : { x: coord, y: p.y };
+    });
+    return isUsablePath(moved, points) ? moved : null;
+  }
+
+  // Endpoint-touching segment: insert the detour, then let simplifyPath drop
+  // the corner that the detour makes redundant (it may land on the next bend).
+  const p1 = horizontal ? { x: a.x, y: coord } : { x: coord, y: a.y };
+  const p2 = horizontal ? { x: b.x, y: coord } : { x: coord, y: b.y };
+  const candidate = trimDuplicatePoints(simplifyPath([
+    ...points.slice(0, index + 1),
+    p1,
+    p2,
+    ...points.slice(index + 1),
+  ]));
+
+  return isUsablePath(candidate, points) ? candidate : null;
+}
+
+/**
+ * Locate the segment an override refers to in a freshly routed path.
+ * Matching uses direction and span overlap, so it survives the point-index
+ * shifts that a re-route can introduce. When the override remembers which end
+ * of the wire it came from, a segment in the same position wins over one that
+ * merely shares its span. A path that changed too much simply yields no match
+ * and the override is dropped.
+ */
+function matchOverrideSegment(points, override) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  let best = null;
+
+  for (let i = 0; i <= points.length - 2; i += 1) {
+    const a = points[i];
+    const b = points[i + 1];
+    const horizontal = a.y === b.y;
+    if (!horizontal && a.x !== b.x) continue;
+    if ((horizontal ? 'h' : 'v') !== override.dir) continue;
+
+    const lo = horizontal ? Math.min(a.x, b.x) : Math.min(a.y, b.y);
+    const hi = horizontal ? Math.max(a.x, b.x) : Math.max(a.y, b.y);
+    const overlap = Math.min(hi, override.span[1]) - Math.max(lo, override.span[0]);
+    if (overlap <= 0) continue;
+
+    const kind = i === 0 ? 'start' : i === points.length - 2 ? 'end' : null;
+    const sameKind = (override.end ?? kind) === kind ? 1 : 0;
+    const better =
+      !best ||
+      sameKind > best.sameKind ||
+      (sameKind === best.sameKind && overlap > best.overlap);
+    if (better) best = { index: i, overlap, sameKind };
+  }
+
+  if (!best) return null;
+  const wanted = override.span[1] - override.span[0];
+  if (wanted > 0 && best.overlap < wanted * 0.6) return null;
+  return best;
+}
+
+/**
+ * Apply manual segment offsets to freshly routed wires.
+ *
+ * Overrides are keyed by `wireOverrideKey` and describe a segment by direction
+ * and span, never by positional wire id or point index. An override whose
+ * segment no longer exists is ignored, leaving the wire auto-routed.
+ *
+ * @param {Array} wires - routed wires
+ * @param {Map<string, Array<{dir:'h'|'v', coord:number, span:[number,number], end?:string}>>} overrides
+ * @returns {Array} wires with matching overrides applied (original array when
+ *   nothing matched)
+ */
+export function applyWireOverrides(wires, overrides) {
+  if (!Array.isArray(wires) || !overrides || overrides.size === 0) return wires;
+
+  let changed = false;
+  const next = wires.map((wire) => {
+    const list = overrides.get(wireOverrideKey(wire));
+    if (!Array.isArray(list) || list.length === 0) return wire;
+
+    let points = wire.points;
+    let applied = false;
+    for (const override of list) {
+      if (!override || !Array.isArray(override.span) || override.span.length !== 2) continue;
+      const match = matchOverrideSegment(points, override);
+      if (!match) continue;
+      const shifted = shiftWireSegment(points, match.index, override.coord);
+      if (!shifted) continue;
+      points = shifted;
+      applied = true;
+    }
+
+    if (!applied) return wire;
+    changed = true;
+    return { ...wire, points, isManualRouting: true };
+  });
+
+  return changed ? next : wires;
+}
+
 /**
  * Apply a visual edit (new centre and/or axis) to a single component,
  * recomputing terminal positions, angle and bounding boxes.
  *
  * @param {Object} comp  - component from the layout
  * @param {{center?:{x,y}, axis?:{x,y}}} edit
+ * @param {{width:number, height:number}|null} bounds - canvas size; when
+ *   supplied the centre is clamped so the whole component (leads included)
+ *   stays inside the canvas
  * @returns {Object} updated component (new object, original untouched)
  */
-export function applyEditToComponent(comp, edit) {
-  const center = edit.center ?? comp.center;
+export function applyEditToComponent(comp, edit, bounds = null) {
+  const requested = edit.center ?? comp.center;
   const axis = edit.axis ?? comp.axis;
+  const center = bounds
+    ? roundPoint(clampCenterToBounds({ ...comp, axis }, requested, bounds))
+    : requested;
   const halfSpan = comp.halfSpan;
 
   const x1 = Math.round(center.x - axis.x * halfSpan);
@@ -1493,12 +1981,75 @@ export function applyEditToComponent(comp, edit) {
  * The electrical graph (node memberships, connections) is preserved — only
  * the geometric wire paths, anchor positions and label placements change.
  *
+ * Manual `wireOverrides` (from dragging a wire segment) are applied
+ * to geometry only, after routing and before label placement and crossing
+ * detection. An override that introduces a new validation error is rejected,
+ * so a visual edit can never make the drawing claim a connection the circuit
+ * does not have.
+ *
  * @param {Object} layout  - layout whose components have updated positions
+ * @param {Map|null} nodeOverrides - nodeId → {x, y} from junction drags
+ * @param {Map|null} wireOverrides - wireOverrideKey → segment descriptors
  * @returns {Object} layout with refreshed wires, junctions, crossings, labels
  */
-export function rerouteLayout(layout, nodeOverrides = null) {
+/**
+ * Recompute the state the renderer derives from a layout, so an edited layout
+ * is validated and described as edited instead of inheriting the verdict of
+ * the layout it was built from.
+ *
+ * Node membership cannot change here — only geometry is edited — so this is a
+ * consistent re-derivation, not a re-solve.
+ */
+function describeEditedLayout(edited) {
+  const renderValidation = validateSchematic(edited);
+  const validation = validateGraph({
+    nodes: (edited.nodes || []).map((n) => ({ id: n.id, members: n.members || [] })),
+    components: edited.components || [],
+    connections: Array.isArray(edited.connections) ? edited.connections : [],
+  });
+
+  const openNodes = (edited.nodes || []).filter(
+    (n) => (n.degree ?? n.members?.length ?? 0) < 2,
+  );
+  const incomplete = Boolean(edited.incomplete) || openNodes.length > 0;
+  const message = incomplete
+    ? (edited.message || INCOMPLETE_MESSAGE)
+    : edited.isApproximation
+      ? (edited.message || APPROX_MESSAGE)
+      : null;
+
+  return { ...edited, validation, renderValidation, incomplete, message };
+}
+
+export function rerouteLayout(layout, nodeOverrides = null, wireOverrides = null) {
   if (!layout || !layout.ok) return layout;
-  const { components, bounds, nodes } = layout;
+  const { bounds, nodes } = layout;
+
+  // Clamp before any geometry is derived: a drag can never park a component
+  // (and therefore its terminals) outside the canvas.
+  const components = (layout.components || []).map((c) => {
+    const clamped = roundPoint(clampCenterToBounds(c, c.center, bounds));
+    if (clamped.x === c.center.x && clamped.y === c.center.y) return c;
+    return applyEditToComponent(c, { center: clamped }, bounds);
+  });
+
+  // Anchors the user dragged are never repositioned for layout reasons.
+  const locked = new Set(nodeOverrides ? nodeOverrides.keys() : []);
+
+  // Where was every terminal before this edit? A node whose members all stayed
+  // put has nothing to re-derive, and rebuilding its position anyway would move
+  // geometry the edit never touched.
+  const before = new Map();
+  for (const comp of layout.components || []) {
+    for (const t of comp.terminals || []) {
+      before.set(terminalKey(comp.id, t.label), { x: t.x, y: t.y });
+    }
+  }
+  const unchanged = (member) => {
+    const was = before.get(member.key);
+    return Boolean(was) && was.x === member.point.x && was.y === member.point.y;
+  };
+  const drawn = new Map((layout.nodes || []).map((n) => [n.id, { x: n.x, y: n.y }]));
 
   // Rebuild the node-anchor plan from current terminal positions so rail
   // anchors follow moved components.
@@ -1518,14 +2069,21 @@ export function rerouteLayout(layout, nodeOverrides = null) {
       }
     }
     const pts = members.map((m) => m.point);
+    // A 3+-member node is a drawn rail anchor and is always derived from its
+    // terminals. Nodes below that are not drawn at all — their wire runs
+    // terminal to terminal — so their position only carries a label, and it may
+    // only move when one of their own terminals moved.
+    const isRail = members.length >= 3;
+    const settled = drawn.get(node.id);
+    const keepDrawn = !isRail && settled && members.every(unchanged);
     plan.set(node.id, {
       id: node.id,
       members,
       degree: members.length,
-      isRail: members.length >= 3,
-      point: members.length >= 3
-        ? roundPoint(centroid(pts))
-        : pts[0] ?? { x: 0, y: 0 },
+      isRail,
+      point: keepDrawn
+        ? roundPoint(settled)
+        : (pts.length ? roundPoint(centroid(pts)) : settled ? roundPoint(settled) : { x: 0, y: 0 }),
     });
   }
 
@@ -1540,29 +2098,59 @@ export function rerouteLayout(layout, nodeOverrides = null) {
     }
   }
 
-  const wires = routeWires(components, plan, bounds);
-  repositionLabels(components, wires, bounds);
-  const crossings = detectCrossings(wires, bounds);
-  const junctions = buildJunctions(plan);
+  // Keep rail anchors readable after the move: apart from each other, out of
+  // component drawings and clear of terminals, so no member wire can collapse.
+  refineAnchors(plan, components, bounds, locked);
 
-  // Update node positions to reflect overrides so node labels and junction
-  // dots stay in sync.
-  const updatedNodes = layout.nodes.map((n) => {
-    if (plan.has(n.id)) {
-      return { ...n, x: plan.get(n.id).point.x, y: plan.get(n.id).point.y };
-    }
-    return n;
-  });
+  // Assemble a layout around a given set of routed wires. Labels are placed
+  // last so they dodge whatever geometry is actually drawn.
+  const assemble = (routedWires) => {
+    // Node positions are read from the plan *here*, after routing has settled
+    // it: the foreign-wire pass below can still move an anchor, and taking the
+    // node positions earlier left wires connected to a point no node admitted.
+    const updatedNodes = layout.nodes.map((n) => {
+      if (plan.has(n.id)) {
+        return { ...n, x: plan.get(n.id).point.x, y: plan.get(n.id).point.y };
+      }
+      return n;
+    });
 
-  return {
-    ...layout,
-    nodes: updatedNodes,
-    components,
-    wires,
-    allWires: wires,
-    junctions,
-    crossings,
+    // Copy the components: label placement mutates them, and this layout may
+    // be the cached base layout (node-only and wire-only edits must not write
+    // into it).
+    const placed = components.map((c) => ({ ...c }));
+    repositionLabels(placed, routedWires, bounds);
+    return describeEditedLayout({
+      ...layout,
+      nodes: updatedNodes,
+      components: placed,
+      wires: routedWires,
+      allWires: routedWires,
+      junctions: buildJunctions(plan),
+      crossings: detectCrossings(routedWires, bounds),
+    });
   };
+
+  let wires = routeWires(components, plan, bounds);
+  // A nudged anchor changes the wires that touch it, so re-route briefly until
+  // no rail anchor sits on another net's conductor.
+  for (let pass = 0; pass < 2; pass += 1) {
+    if (!avoidForeignWireAtAnchors(plan, wires, components, bounds, locked)) break;
+    wires = routeWires(components, plan, bounds);
+  }
+
+  if (!wireOverrides || wireOverrides.size === 0) return assemble(wires);
+
+  const shifted = applyWireOverrides(wires, wireOverrides);
+  if (shifted === wires) return assemble(wires);
+
+  const candidate = assemble(shifted);
+  const base = assemble(wires);
+  const baseErrors = new Set(base.renderValidation.errors);
+  // Only NEW errors block the edit: a layout that already had a problem must
+  // stay editable.
+  const introduced = candidate.renderValidation.errors.filter((e) => !baseErrors.has(e));
+  return introduced.length === 0 ? candidate : base;
 }
 
 /** Re-exported so callers can keep using a single import surface. */
