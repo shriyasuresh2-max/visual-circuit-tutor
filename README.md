@@ -1,135 +1,119 @@
 # Visual Circuit Tutor
 
-**Understand circuits, one step at a time.**
+**An interactive circuit learning tool that turns circuit diagrams into editable, understandable schematics.**
 
-Visual Circuit Tutor is an interactive educational web application that aims to make electrical circuit analysis easier to understand through image-based circuit recognition, electrical graph reconstruction, visual schematics, and step-by-step explanations.
+Visual Circuit Tutor is a web application designed to help students understand electrical circuits from images. Instead of manually rebuilding a circuit, users can upload a circuit diagram and let AI identify its components and connections.
 
-Instead of simply displaying a final numerical answer, the project focuses on helping learners understand how a circuit is interpreted, how its components are connected, and how electrical quantities are calculated.
+The project focuses on making circuit diagrams easier to inspect, edit, and understand through visual reconstruction.
+
+---
 
 ## Overview
 
-The application allows users to upload an image of an electrical circuit. A vision model analyzes the diagram and extracts information about its components and connections. The extracted information is then processed into an electrical graph and reconstructed as an interactive schematic.
+Understanding an electrical circuit involves more than identifying its components. Students also need to understand how those components are connected, how current flows through the circuit, and how the circuit can be represented as an electrical network.
 
-The long-term goal is to connect accurate circuit reconstruction with a verified calculation engine and synchronized visual explanations.
+Visual Circuit Tutor aims to simplify this process.
 
-## Current Features
+The application takes an uploaded circuit image, uses AI-powered image understanding to extract its structure, and reconstructs it as an interactive schematic.
 
-### 1. Circuit Image Upload and Analysis
+The long-term goal is to combine accurate circuit recognition, a reliable electrical calculation engine, and interactive visual explanations into one learning platform.
 
-- Upload circuit diagrams for analysis.
-- Backend integration using FastAPI and Google's Gemini API.
-- Vision-based identification of electrical components and their visible values.
-- Extraction of component terminals and electrical connections.
-- Structured analysis responses for frontend processing.
-- Support for an optional sample circuit workflow.
+## Features
 
-### 2. Electrical Graph Reconstruction
+### Circuit Image Upload
+- Upload circuit diagrams as images.
+- Analyze uploaded diagrams using AI-powered image recognition.
+- Extract component information and electrical connections.
 
-The extracted circuit information is converted into an electrical graph.
+### Circuit Reconstruction
+- Convert recognized circuit information into a structured electrical graph.
+- Reconstruct the circuit as a schematic.
+- Represent components, terminals, wires, junctions, and crossings.
+- Keep electrical connectivity separate from visual positioning.
 
-- Represents components and their terminals.
-- Identifies electrical nodes through explicit connections.
-- Preserves branches and connectivity relationships.
-- Separates electrical connectivity from visual positioning.
-- Includes graph validation and reconstruction tests.
+### Interactive Circuit Editor
+- Move circuit components.
+- Drag junctions to adjust their positions.
+- Move wire segments to change the visual routing.
+- Drag wire endpoints and preview possible snap targets.
+- Snap previews identify nearby terminals, junctions, and wire segments.
+- Reroute connected wires when components or junctions are moved.
 
-The electrical graph acts as the foundation for subsequent circuit analysis.
+### Circuit Validation
+- Validate electrical connectivity.
+- Distinguish actual junctions from wire crossings.
+- Detect incomplete or invalid schematic structures.
+- Re-evaluate the reconstructed layout after edits.
 
-### 3. Schematic Layout and Rendering
+### Stability and Editing
+- Preserve junction positions when unrelated wires are edited.
+- Keep connected wires aligned with their electrical nodes.
+- Prevent visual edits from unintentionally changing the underlying electrical graph.
 
-The reconstructed graph is translated into a visual circuit schematic.
+---
 
-- Places electrical components and their terminals.
-- Routes wires between connected components.
-- Generates junctions and crossing representations.
-- Supports schematic positioning and layout adjustments.
-- Maintains component terminal relationships during visual edits.
-- Includes battery polarity handling and orientation logic.
+## How It Works
 
-The layout engine is designed to keep electrical connectivity separate from the visual arrangement of the circuit.
-
-### 4. Interactive Circuit Workspace
-
-The workspace provides an environment for viewing and interacting with reconstructed circuits.
-
-Current editing capabilities include:
-
-- Selecting circuit components.
-- Moving components within the schematic.
-- Rotating components.
-- Selecting wires.
-- Selecting and repositioning supported junction nodes.
-- Visual rerouting of connections after component movement.
-- Resetting the circuit and starting a new problem.
-
-Visual adjustments are handled separately from the underlying electrical graph so that moving a component does not automatically change its electrical connections.
-
-### 5. Circuit Analysis and Learning Interface
-
-The application includes a learning-oriented interface and an existing circuit calculation module.
-
-The project is being developed towards:
-
-- Identifying what a problem asks the learner to calculate.
-- Applying appropriate electrical laws and formulas.
-- Showing intermediate calculation steps.
-- Explaining the physical meaning of calculated values.
-- Connecting calculation steps with visual circuit highlights.
-
-The calculation engine and explanation workflow are being expanded alongside the reconstruction system.
-
-## Technology Stack
-
-| Layer | Technologies |
-|---|---|
-| Frontend | React, Vite, JavaScript |
-| Styling | CSS |
-| Backend | Python, FastAPI |
-| Circuit Recognition | Google Gemini API |
-| Circuit Representation | Electrical graph, structured component and connection data |
-| Schematic Rendering | SVG |
-| Testing | Vitest, Python test scripts |
-| Version Control | Git, GitHub |
-
-## Project Architecture
-
-The application is organized into separate stages so that image recognition, electrical connectivity, schematic layout, and rendering can be developed independently.
-
-### Circuit Processing Pipeline
+The application follows a modular pipeline:
 
 ```text
-User uploads circuit image
-          |
-          v
-React Frontend
-          |
-          v
-FastAPI Backend
-          |
-          v
-Gemini Vision Analysis
-          |
-          v
-Structured Circuit Data
-          |
-          v
-Electrical Graph Reconstruction
-          |
-          v
-Schematic Layout Engine
-          |
-          v
-Interactive SVG Circuit
+       Circuit Image
+             |
+             v
+    AI Image Recognition
+             |
+             v
+   Component & Connection
+        Extraction
+             |
+             v
+     Electrical Graph
+             |
+             v
+      Schematic Layout
+             |
+             v
+    Interactive Circuit UI
 ```
 
-### Main Components
+### 1. Image Recognition
 
-- **Image Analysis:** Extracts circuit components, values, terminals, and connections from uploaded diagrams.
-- **Electrical Graph:** Represents the actual electrical relationships between components.
-- **Schematic Layout:** Determines component positions, wire routes, junctions, and crossings.
-- **Circuit Renderer:** Displays the reconstructed circuit as an SVG schematic.
-- **Interactive Editor:** Allows users to select and visually adjust elements of the reconstructed circuit.
-- **Calculation Engine:** Provides the foundation for electrical calculations and subsequent learning explanations.
+The uploaded image is processed using Google's Gemini API to identify circuit components, their properties, and their connections.
+
+### 2. Electrical Graph Construction
+
+The extracted information is converted into an electrical graph.
+
+This graph represents the actual connectivity of the circuit, independently of how the circuit is displayed on screen.
+
+### 3. Schematic Layout
+
+The layout engine positions components, terminals, junctions, and wires to produce a readable circuit diagram.
+
+It also handles wire routing, junction positioning, and visual crossings.
+
+### 4. Interactive Rendering
+
+The reconstructed circuit is displayed in the React frontend.
+
+Users can interact with components, junctions, and wires while the application maintains the underlying electrical structure.
+
+---
+
+## Tech Stack
+
+| Technology | Purpose |
+|---|---|
+| React | Frontend user interface |
+| Vite | Frontend development and build tooling |
+| JavaScript | Application logic |
+| Python | Backend logic |
+| FastAPI | Backend API |
+| Google Gemini API | Circuit image recognition |
+| SVG | Interactive circuit rendering |
+| Vitest | Unit testing |
+
+---
 
 ## Project Structure
 
@@ -137,69 +121,61 @@ Interactive SVG Circuit
 visual-circuit-tutor/
 │
 ├── backend/
-│   ├── main.py
-│   ├── requirements.txt
-│   └── .env.example
-│
-├── docs/
-│   └── CHANGELOG.md
+│   └── main.py
 │
 ├── src/
-│   ├── App.jsx
-│   ├── App.css
-│   │
 │   ├── circuit/
-│   │   ├── circuitEngine.js
-│   │   ├── circuitEngine.test.js
-│   │   ├── circuitLayout.js
-│   │   ├── circuitLayout.test.js
 │   │   ├── electricalGraph.js
-│   │   ├── electricalGraph.test.js
+│   │   ├── circuitLayout.js
 │   │   ├── schematicLayout.js
-│   │   ├── schematicLayout.test.js
-│   │   ├── seriesOrientation.test.js
-│   │   └── reconstructionEngine.test.js
+│   │   └── wireSnap.js
 │   │
 │   ├── components/
-│   │   ├── AnalysisResultPanel.jsx
 │   │   ├── CircuitDiagram.jsx
 │   │   ├── LandingPage.jsx
-│   │   └── ReferenceViewer.jsx
+│   │   └── ...
 │   │
 │   ├── hooks/
-│   │   └── useCircuitAnalysis.js
+│   │   └── ...
 │   │
-│   └── utils/
-│       └── sampleCircuit.js
+│   ├── App.jsx
+│   └── main.jsx
 │
 ├── tests/
-│   └── fixtures/
-│
-├── index.html
 ├── package.json
-├── vite.config.js
 └── README.md
 ```
 
+---
+
 ## Getting Started
+
+Follow these instructions to run the project locally.
 
 ### Prerequisites
 
-- Node.js (v18 or higher recommended).
-- npm.
-- Python 3.10 or higher.
-- A Google Gemini API key.
+Make sure you have installed:
+
+- Node.js and npm
+- Python 3
+- Git
+- A Google Gemini API key
 
 ### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/shriyasuresh2-max/visual-circuit-tutor.git
+```
+
+Navigate into the project:
+
+```bash
 cd visual-circuit-tutor
 ```
 
 ### 2. Set Up the Frontend
 
-Install dependencies:
+Install the dependencies:
 
 ```bash
 npm install
@@ -211,7 +187,7 @@ Start the development server:
 npm run dev
 ```
 
-Open the local URL displayed by Vite, usually:
+The frontend should be available at:
 
 ```text
 http://localhost:5173
@@ -219,41 +195,25 @@ http://localhost:5173
 
 ### 3. Set Up the Backend
 
-Open another terminal and navigate to the backend directory:
+Open a separate terminal and navigate to the backend:
 
 ```bash
 cd backend
 ```
 
-Create a virtual environment:
+Create a Python virtual environment:
 
-**Windows:**
-
-```powershell
+```bash
 py -m venv .venv
 ```
 
-**macOS / Linux:**
-
-```bash
-python3 -m venv .venv
-```
-
-Activate the virtual environment:
-
-**Windows:**
+Activate it in PowerShell:
 
 ```powershell
-.venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1
 ```
 
-**macOS / Linux:**
-
-```bash
-source .venv/bin/activate
-```
-
-Install backend dependencies:
+Install the backend dependencies:
 
 ```bash
 pip install -r requirements.txt
@@ -261,91 +221,119 @@ pip install -r requirements.txt
 
 ### 4. Configure the Gemini API Key
 
-Create a `.env` file inside the `backend/` directory using `.env.example` as a template.
+Create a `.env` file inside the `backend` directory and add your Gemini API key using the environment variable expected by the backend.
 
-Add your API key:
+Do not commit your `.env` file or expose your API key publicly.
 
-```env
-GEMINI_API_KEY=your_gemini_api_key
-```
+### 5. Start the Backend
 
-Never commit your actual `.env` file or expose your API key publicly.
-
-### 5. Start the Backend Server
-
-From the `backend/` directory:
+From the `backend` directory:
 
 ```bash
-uvicorn main:app --reload --port 8000
+.\.venv\Scripts\python.exe -m uvicorn main:app --reload --port 8000
 ```
 
-The backend will run at:
+The backend should be available at:
 
 ```text
 http://127.0.0.1:8000
 ```
 
-Keep both the frontend and backend development servers running while using image analysis.
+Keep both the frontend and backend running while using the application.
 
-## Testing
+---
 
-### Frontend Tests
+## Running Tests
 
-Run the Vitest suite:
+The project uses Vitest for testing circuit graph construction, schematic layout, wire snapping, and editing behavior.
+
+Run the test suite:
 
 ```bash
 npm test
 ```
 
-Run tests once without watch mode, if supported by the project script:
-
-```bash
-npx vitest run
-```
-
-### Production Build
+Create a production build:
 
 ```bash
 npm run build
 ```
 
-### Backend Tests
+---
 
-The repository includes Python test and fixture scripts under `tests/fixtures/`. Some scripts require a running backend and a configured Gemini API key.
+## Design Principles
 
-## Current Scope and Limitations
+The project is being developed around a few important principles:
 
-Visual Circuit Tutor is an actively developed project. Its reconstruction and editing pipeline is being improved, and the following limitations remain important:
+**1. Electrical correctness comes first**
 
-- Image recognition can misidentify components, terminal labels, or connections, particularly in blurry or complex diagrams.
-- Reconstructed schematics may require manual visual correction.
-- Correct electrical connectivity is a higher priority than visual similarity alone.
-- Visual component movement and junction positioning do not yet provide a complete electrical connection-editing workflow.
-- Full support for arbitrary circuit topologies and complex networks is still under development.
-- A complete interactive electrical simulation with synchronized current and voltage animations is a future development goal.
-- Automated recognition and solving should not be treated as guaranteed correct for every uploaded circuit.
+A circuit must preserve its actual electrical connections. A visually attractive diagram is not useful if its topology is incorrect.
 
-## Future Development
+**2. Connectivity and geometry are separate**
 
-Planned improvements include:
+Moving a component or changing a wire's visual route should not accidentally change the electrical graph.
 
-1. More reliable circuit image recognition and topology extraction.
-2. Better handling of wire crossings, junctions, branches, and complex networks.
-3. Editable electrical connections, including creating and deleting wires.
-4. A more comprehensive calculation engine for series, parallel, and mixed circuits.
-5. Automatic identification of the quantities requested in a problem statement.
-6. Step-by-step explanations linked to highlighted circuit components.
-7. Interactive simulation of current, voltage, and power.
-8. More accurate circuit reconstruction across different diagram styles.
+**3. General-purpose reconstruction**
 
-## Project Motivation
+The system should work with different circuit diagrams rather than relying on hardcoded component positions, circuit IDs, or specific example topologies.
 
-Many students learn electrical circuit analysis by memorizing formulas without fully understanding how components interact.
+**4. Modular architecture**
 
-Visual Circuit Tutor is an attempt to bridge that gap by combining computer vision, electrical graph theory, programming, and interactive visualization into one learning experience.
+Image recognition, graph construction, schematic layout, rendering, and electrical calculations should remain separate so that each part can be improved independently.
 
-The goal is not just to calculate circuit answers, but to make the reasoning behind them visible.
+**5. Visual learning**
+
+The goal is not simply to display an answer. The application should eventually help students understand how a circuit works through interactive explanations and visual feedback.
 
 ---
 
-**Built as an ongoing learning and engineering project.**
+## Current Development Status
+
+Visual Circuit Tutor is an active work in progress.
+
+### Implemented
+
+- Circuit image upload and AI-based analysis pipeline.
+- Electrical graph construction.
+- Component and terminal representation.
+- Schematic reconstruction and wire routing.
+- Interactive component movement.
+- Junction movement and wire rerouting.
+- Wire segment dragging.
+- Wire endpoint snap-target detection and visual previews.
+- Circuit layout validation.
+- Regression tests for graph, layout, snapping, and editing behavior.
+
+### Planned
+
+- Improve recognition accuracy for complex and handwritten circuit diagrams.
+- Support more complicated circuit topologies.
+- Allow users to correct incorrectly recognized electrical connections.
+- Build a reliable Python-based electrical calculation engine.
+- Support series and parallel resistor circuit calculations.
+- Accept the actual circuit question alongside the uploaded image.
+- Generate step-by-step explanations based on verified calculations.
+- Add interactive current-flow and voltage visualizations.
+- Introduce circuit simulation and animated explanations.
+
+These are planned capabilities and should not be considered fully implemented yet.
+
+---
+
+## Project Goal
+
+The long-term vision is to create an interactive learning environment where students can upload an electrical circuit, understand its structure, correct recognition mistakes, solve the problem, and visualize the reasoning behind the solution.
+
+Rather than treating circuit solving as a final numerical answer, Visual Circuit Tutor aims to make the entire process of understanding a circuit more visual and intuitive.
+
+---
+
+## Author
+
+**Shriya Suresh**
+
+GitHub: [@shriyasuresh2-max](https://github.com/shriyasuresh2-max)
+
+---
+
+*Visual Circuit Tutor is an independently developed project currently under active development.*
