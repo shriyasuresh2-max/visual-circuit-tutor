@@ -15,7 +15,9 @@ import {
   overridesFromSavedCircuit,
 } from '../circuit/savedCircuit.js';
 import { valueDisplay } from '../circuit/componentValue.js';
-import { LABEL_CARD, labelSize } from '../circuit/labelMetrics.js';
+import { mapLessonHighlights } from '../circuit/dcLessonHighlights.js';
+import { placeDcCurrentArrows } from '../circuit/dcCurrentArrows.js';
+import { LABEL_CARD, NODE_LABEL_FONT_SIZE, labelSize, nodeLabelPosition } from '../circuit/labelMetrics.js';
 
 /**
  * Technical SVG Schematic of a DC Series Circuit
@@ -35,6 +37,9 @@ export default function CircuitDiagram({
   activeStep,
   onSelectStep,
   analysisResult,
+  electricalGraph,
+  lessonStep,
+  reconstructionKey = analysisResult,
   onSaveCircuit,
   imageId,
   savedCircuit,
@@ -44,13 +49,17 @@ export default function CircuitDiagram({
   // -----------------------------------------------------------------------
   const layout = useMemo(() => {
     if (!analysisResult || !analysisResult.components?.length) return null;
-    return layoutCircuit(analysisResult);
-  }, [analysisResult]);
+    return layoutCircuit(analysisResult, electricalGraph);
+  }, [analysisResult, electricalGraph]);
 
   if (analysisResult && analysisResult.components?.length > 0) {
     return (
       <ReconstructedDiagram
         layout={layout}
+        key={imageId}
+        reconstructionKey={reconstructionKey}
+        electricalGraph={electricalGraph}
+        lessonStep={lessonStep}
         analysisResult={analysisResult}
         onSaveCircuit={onSaveCircuit}
         imageId={imageId}
@@ -92,7 +101,11 @@ const TYPE_COLORS = {
  * The symbol is rendered in local coordinates (centered at origin, along
  * the +x axis) and transformed to the correct screen position + rotation.
  */
-function ComponentSymbol({ comp, selected }) {
+const LESSON_WIRE_COLOR = '#67e8f9';
+const LESSON_NODE_COLORS = { reference: '#86efac', unknown: '#c4b5fd', kcl: '#fcd34d', node: LESSON_WIRE_COLOR };
+const CURRENT_ARROW_COLORS = { reference: '#a5b4fc', actual: '#fdba74' };
+
+function ComponentSymbol({ comp, selected, highlighted = false, dimmed = false }) {
   const { x1, y1, x2, y2, type, id, posTerminal, status, labelPosition } = comp;
   // The value is drawn exactly as read; an unreadable unit is flagged beside it
   // instead of being dropped or guessed.
@@ -106,7 +119,9 @@ function ComponentSymbol({ comp, selected }) {
   const mx = comp.center?.x ?? Math.round((x1 + x2) / 2);
   const my = comp.center?.y ?? Math.round((y1 + y2) / 2);
 
-  const color = TYPE_COLORS[type] ?? TYPE_COLORS.unknown;
+  const color = highlighted ? LESSON_WIRE_COLOR : (TYPE_COLORS[type] ?? TYPE_COLORS.unknown);
+  const leadColor = highlighted ? LESSON_WIRE_COLOR : '#475569';
+  const symbolOpacity = dimmed && !selected ? 0.62 : undefined;
 
   // All geometry comes from the layout engine: rotation, symbol extent and the
   // terminal points. The renderer never re-derives them, so the drawn symbol,
@@ -146,7 +161,7 @@ function ComponentSymbol({ comp, selected }) {
   const selBox = selected && comp.symbolBox ? comp.symbolBox : null;
 
   return (
-    <g className="rc-comp" data-comp-id={id} style={{ cursor: 'move' }}>
+    <g className="rc-comp" data-comp-id={id} data-lesson-highlight={highlighted ? 'component' : undefined} style={{ cursor: 'move' }}>
       {/* Invisible hit area — covers the full draw box (symbol + leads) so the
           user doesn't need to click precisely on a thin line. */}
       {comp.drawBox && (
@@ -178,14 +193,14 @@ function ComponentSymbol({ comp, selected }) {
 
       {/* leader wires — connect component symbol boundary cleanly to terminals with zero gap */}
       {type !== 'wire' && (
-        <>
-          <line x1={x1} y1={y1} x2={sx1} y2={sy1} stroke="#475569" strokeWidth="2.5" strokeLinecap="round" />
-          <line x1={sx2} y1={sy2} x2={x2} y2={y2} stroke="#475569" strokeWidth="2.5" strokeLinecap="round" />
-        </>
+        <g opacity={symbolOpacity}>
+          <line x1={x1} y1={y1} x2={sx1} y2={sy1} stroke={leadColor} strokeWidth={highlighted ? 3.5 : 2.5} strokeLinecap="round" />
+          <line x1={sx2} y1={sy2} x2={x2} y2={y2} stroke={leadColor} strokeWidth={highlighted ? 3.5 : 2.5} strokeLinecap="round" />
+        </g>
       )}
 
       {/* symbol */}
-      <g transform={`translate(${mx} ${my}) rotate(${angle}) scale(${symbolScale} 1)`}>
+      <g opacity={symbolOpacity} transform={`translate(${mx} ${my}) rotate(${angle}) scale(${symbolScale} 1)`}>
         {renderSymbol(type, color, aIsPos, bIsPos)}
       </g>
 
@@ -380,7 +395,9 @@ const ENDPOINT_HANDLE_HIT = 10;
 // (indigo #818cf8, blue #38bdf8) so a preview can never read as a real join.
 const SNAP_PREVIEW_COLOR = '#f59e0b';
 
-function ReconstructedDiagram({ layout, analysisResult, onSaveCircuit, imageId, savedCircuit }) {
+function ReconstructedDiagram({
+  layout, reconstructionKey, analysisResult, electricalGraph, lessonStep, onSaveCircuit, imageId, savedCircuit,
+}) {
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   // Editing is opt-in: the drawing is read-only until the user presses Edit, so
   // a stray click can no longer nudge a component. Every existing gesture
@@ -417,6 +434,14 @@ function ReconstructedDiagram({ layout, analysisResult, onSaveCircuit, imageId, 
       wireEdits.size > 0 ? wireEdits : null,
     );
   }, [layout, edits, nodeEdits, wireEdits]);
+  const lessonHighlights = useMemo(
+    () => mapLessonHighlights(electricalGraph, editedLayout, lessonStep),
+    [electricalGraph, editedLayout, lessonStep],
+  );
+  const currentArrows = useMemo(
+    () => placeDcCurrentArrows(editedLayout, lessonStep, lessonHighlights),
+    [editedLayout, lessonStep, lessonHighlights],
+  );
 
   // --- Edit / Save mode --------------------------------------------------
   const startEditing = useCallback(() => {
@@ -746,7 +771,8 @@ function ReconstructedDiagram({ layout, analysisResult, onSaveCircuit, imageId, 
   //
   // `savedCircuit` is read but intentionally not a dependency: it changes when
   // this very component saves, and re-running then would wipe the edits the user
-  // is still making. It only matters at the moment a layout is (re)established.
+  // is still making. Value corrections can relabel the layout without
+  // replacing the reconstruction or its active geometry edits.
   useEffect(() => {
     setSelectedId(null);
     setSelectedNode(null);
@@ -765,7 +791,7 @@ function ReconstructedDiagram({ layout, analysisResult, onSaveCircuit, imageId, 
       setWireEdits(new Map());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout]);
+  }, [reconstructionKey]);
 
   if (!layout || !layout.ok) {
     return (
@@ -849,6 +875,12 @@ function ReconstructedDiagram({ layout, analysisResult, onSaveCircuit, imageId, 
         </div>
       )}
 
+      {currentArrows.length > 0 && (
+        <p className="diagram-caption-hint">
+          {lessonStep.currentArrowMode === 'reference' ? 'Reference current directions' : 'Solved conventional-current directions'}
+        </p>
+      )}
+
       <div
         className="diagram-viewport diagram-viewport--reconstructed"
         ref={viewportRef}
@@ -894,8 +926,10 @@ function ReconstructedDiagram({ layout, analysisResult, onSaveCircuit, imageId, 
               and a visible polyline on top with pointerEvents disabled. */}
           {displayWires.filter((w) => w.points && w.points.length >= 2).map((w) => {
             const isSel = selectedWire === w.id;
+            const highlighted = lessonHighlights.wireIds.has(w.id);
+            const baseOpacity = w.confidence < 0.6 ? 0.5 : 0.9;
             return (
-              <g key={`wire-${w.id}`} data-wire-id={w.id} style={{ cursor: 'pointer' }}>
+              <g key={`wire-${w.id}`} data-wire-id={w.id} data-lesson-highlight={highlighted ? 'wire' : undefined} style={{ cursor: 'pointer' }}>
                 {/* Invisible hit area — 16px wide stroke makes thin wires easy to grab */}
                 <polyline
                   points={w.points.map((p) => `${p.x},${p.y}`).join(' ')}
@@ -909,12 +943,12 @@ function ReconstructedDiagram({ layout, analysisResult, onSaveCircuit, imageId, 
                 <polyline
                   points={w.points.map((p) => `${p.x},${p.y}`).join(' ')}
                   fill="none"
-                  stroke={isSel ? '#38bdf8' : (w.isCrossing || (w.confidence != null && w.confidence < 0.6) ? '#94a3b8' : '#475569')}
-                  strokeWidth={isSel ? 4 : 2.5}
+                  stroke={isSel ? '#38bdf8' : highlighted ? LESSON_WIRE_COLOR : (w.isCrossing || (w.confidence != null && w.confidence < 0.6) ? '#94a3b8' : '#475569')}
+                  strokeWidth={isSel || highlighted ? 4 : 2.5}
                   strokeLinejoin="round"
                   strokeLinecap="round"
                   strokeDasharray={w.isCrossing || (w.confidence != null && w.confidence < 0.7) ? '5 4' : undefined}
-                  opacity={isSel ? 1 : (w.confidence < 0.6 ? 0.5 : 0.9)}
+                  opacity={isSel || highlighted ? 1 : baseOpacity * (lessonHighlights.active ? 0.65 : 1)}
                   pointerEvents="none"
                 />
               </g>
@@ -925,6 +959,16 @@ function ReconstructedDiagram({ layout, analysisResult, onSaveCircuit, imageId, 
           {components.filter((c) => c.type === 'wire').map((c) => (
             <line key={`wcomp-${c.id}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke="#475569" strokeWidth="2.5" />
           ))}
+
+          <g aria-hidden="true" pointerEvents="none">
+            {currentArrows.filter((arrow) => arrow.flowPath).map((arrow) => (
+              <polyline key={arrow.branchId} className="dc-current-flow"
+                data-current-flow-branch-id={arrow.branchId} data-current-flow-wire-id={arrow.wireId}
+                points={arrow.flowPath.map(({ x, y }) => `${x},${y}`).join(' ')}
+                fill="none" stroke={CURRENT_ARROW_COLORS.actual} strokeWidth="1.7"
+                strokeLinecap="round" strokeLinejoin="round" />
+            ))}
+          </g>
 
           {/* Crossing markers (semicircular bridge jump for unconnected crossings) */}
           {crossings.map((cx, i) => {
@@ -946,26 +990,33 @@ function ReconstructedDiagram({ layout, analysisResult, onSaveCircuit, imageId, 
           })}
 
           {/* Non-wire components */}
-          {components.filter((c) => c.type !== 'wire').map((c) => (
-            <ComponentSymbol key={c.id} comp={c} selected={c.id === selectedId} />
-          ))}
+          {components.filter((c) => c.type !== 'wire').map((c) => {
+            const highlighted = lessonHighlights.componentIds.has(c.id);
+            return <ComponentSymbol key={c.id} comp={c} selected={c.id === selectedId}
+              highlighted={highlighted} dimmed={lessonHighlights.active && !highlighted} />;
+          })}
 
           {/* Junction dots — one per physical branching point, so a net that
               branches in two places shows two dots. Only the node's anchor dot
               is draggable: dragging it moves the net's anchor, and it must never
               drag the net's other branch points along with it. */}
-          {junctions.filter((j) => j.isJunction !== false).map((j) => {
+          {junctions.filter((j) => j.isJunction !== false &&
+            (j.isRealJunction !== false || (isEditing && j.isAnchor))).map((j) => {
             // Interaction is keyed on the electrical node id (N0…), never on the
             // visual junction id (J1…), so a dot resolves to layout.nodes.
             const nodeId = j.nodeId ?? j.id;
             const draggable = j.isAnchor !== false;
             const selected = selectedNode === nodeId && draggable;
+            const role = lessonHighlights.nodes.get(nodeId);
+            const color = LESSON_NODE_COLORS[role];
             return (
               <g
                 key={`jct-${j.id}`}
+                data-lesson-node-id={nodeId}
+                data-lesson-highlight={role}
                 {...(draggable ? { 'data-node-id': nodeId } : {})}
                 style={draggable ? { cursor: 'move' } : { pointerEvents: 'none' }}
-                aria-label={draggable ? `Junction ${j.id} of ${nodeId}` : `Branch junction ${j.id} of ${nodeId}`}
+                aria-label={j.isRealJunction === false ? `Layout anchor for ${nodeId}` : `Junction ${j.id} of ${nodeId}`}
               >
                 {/* Invisible hit area — much larger than the visible dot */}
                 {draggable && (
@@ -976,17 +1027,45 @@ function ReconstructedDiagram({ layout, analysisResult, onSaveCircuit, imageId, 
                   <circle cx={j.x} cy={j.y} r="11" fill="none" stroke="#38bdf8" strokeWidth="1.5" strokeDasharray="3 2" opacity="0.8" />
                 )}
                 {/* Visible junction dot */}
-                <circle cx={j.x} cy={j.y} r="5" fill={selected ? '#38bdf8' : '#818cf8'} stroke="#0c111a" strokeWidth="1.5" />
+                {j.isRealJunction !== false ? (
+                  <circle cx={j.x} cy={j.y} r={role ? 6 : 5} fill={selected ? '#38bdf8' : (color ?? '#818cf8')} stroke="#0c111a" strokeWidth="1.5" />
+                ) : (
+                  <circle cx={j.x} cy={j.y} r="5" fill="none" stroke="#818cf8" strokeWidth="1.5" />
+                )}
               </g>
             );
           })}
 
           {/* Node labels */}
-          {nodes.map((n) => (
-            <text key={`nl-${n.id}`} x={n.x + 8} y={n.y - 8} fill="#475569" fontSize="9" fontFamily="var(--font-mono)">
-              {n.id}
-            </text>
-          ))}
+          {nodes.map((n) => {
+            const role = lessonHighlights.nodes.get(n.id);
+            return (
+              <text key={`nl-${n.id}`} {...nodeLabelPosition(n)} data-lesson-node-id={n.id}
+                data-lesson-highlight={role} fill={LESSON_NODE_COLORS[role] ?? '#475569'}
+                fontWeight={role ? 700 : undefined} fontSize={NODE_LABEL_FONT_SIZE} fontFamily="var(--font-mono)">
+                {n.id}
+              </text>
+            );
+          })}
+
+          <g pointerEvents="none" aria-label="Branch current arrows">
+            {currentArrows.map((arrow) => {
+              const color = CURRENT_ARROW_COLORS[arrow.mode];
+              return (
+                <g key={arrow.branchId} role="img" data-current-arrow={arrow.mode}
+                  data-current-branch-id={arrow.branchId} data-current-wire-id={arrow.wireId ?? undefined}
+                  aria-label={`${arrow.branchId} ${arrow.mode} current from ${arrow.fromTerminal} to ${arrow.toTerminal}`}>
+                  <line x1={arrow.start.x} y1={arrow.start.y} x2={arrow.end.x} y2={arrow.end.y}
+                    stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+                  <polygon points={arrow.head.map(({ x, y }) => `${x},${y}`).join(' ')} fill={color} />
+                  <text x={arrow.label.x} y={arrow.label.y} textAnchor="middle" dominantBaseline="central"
+                    fontSize={arrow.label.fontSize} fontWeight="700" fontFamily="var(--font-mono)" fill={color}>
+                    {arrow.label.text}
+                  </text>
+                </g>
+              );
+            })}
+          </g>
 
           {/* Wire endpoint handles. Rendered only for the selected wire and on
               top, so no click on a component or junction changes behaviour. */}

@@ -26,6 +26,22 @@ export const LABEL_CARD = {
   edgeGap: 6,
 };
 
+export const NODE_LABEL_FONT_SIZE = 9;
+
+export function nodeLabelPosition(node) {
+  return { x: node.x + 8, y: node.y - 8 };
+}
+
+export function nodeLabelBox(node) {
+  const { x, y } = nodeLabelPosition(node);
+  return {
+    minX: x,
+    maxX: x + String(node.id).length * NODE_LABEL_FONT_SIZE * 0.65,
+    minY: y - NODE_LABEL_FONT_SIZE,
+    maxY: y + 2,
+  };
+}
+
 /**
  * The exact size of the card a component's label needs.
  *

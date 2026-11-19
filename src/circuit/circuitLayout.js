@@ -59,8 +59,8 @@ export {
  * @param {Object} analysis - backend CircuitAnalysis object
  * @returns {Object} positioned circuit data for the renderer
  */
-export function layoutCircuit(analysis) {
-  return layoutSchematic(analysis);
+export function layoutCircuit(analysis, electricalGraph) {
+  return layoutSchematic(analysis, electricalGraph);
 }
 
 /**

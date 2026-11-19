@@ -449,6 +449,47 @@ describe('schematicLayout — image geometry handling', () => {
  * The validator itself must catch broken geometry
  * ------------------------------------------------------------------ */
 
+describe('validateSchematic — overlapping wire segments', () => {
+  function validatePair(first, second, { secondNode = 'N2', isExtracted = false } = {}) {
+    const makeWire = (id, node, points) => ({
+      id,
+      node,
+      to: `OPEN:${id}`,
+      isExtracted,
+      points: points.map(([x, y]) => ({ x, y })),
+    });
+    return validateSchematic({
+      ok: true,
+      wires: [makeWire('W1', 'N1', first), makeWire('W2', secondNode, second)],
+    });
+  }
+
+  it.each([
+    ['horizontal', [[10, 20], [40, 20]], [[50, 20], [30, 20]], '(30,20) to (40,20)'],
+    ['vertical', [[20, 10], [20, 40]], [[20, 30], [20, 50]], '(20,30) to (20,40)'],
+    ['subpixel', [[10, 20], [40, 20]], [[39.75, 20], [50, 20]], '(39.75,20) to (40,20)'],
+    ['diagonal', [[10, 10], [40, 40]], [[30, 30], [50, 50]], '(30,30) to (40,40)'],
+  ])('rejects %s overlap between different nets', (kind, first, second, span) => {
+    const result = validatePair(first, second, { isExtracted: kind === 'diagonal' });
+    expect(result.isValid).toBe(false);
+    expect(result.errors).toEqual([`Wire W1 (net N1) and wire W2 (net N2) overlap from ${span}.`]);
+  });
+
+  it('accepts overlapping segments on the same net', () => {
+    const result = validatePair([[10, 20], [40, 20]], [[30, 20], [50, 20]], { secondNode: 'N1' });
+    expect(result.isValid).toBe(true);
+  });
+
+  it.each([
+    ['a perpendicular crossing', [[25, 10], [25, 30]]],
+    ['a parallel segment on a nearby line', [[30, 20.25], [50, 20.25]]],
+    ['a disjoint collinear segment', [[45, 20], [50, 20]]],
+    ['a shared endpoint', [[40, 20], [50, 20]]],
+  ])('accepts %s', (_name, second) => {
+    expect(validatePair([[10, 20], [40, 20]], second).isValid).toBe(true);
+  });
+});
+
 describe('validateSchematic — catches defects the graph alone cannot see', () => {
   const base = layoutCircuit(parallel3);
 
@@ -512,12 +553,12 @@ describe('validateSchematic — catches defects the graph alone cannot see', () 
  * ------------------------------------------------------------------ */
 
 describe('rail anchor recalculation after collision resolution', () => {
-  it('places the junction at the centroid of final terminal positions (parallel)', () => {
+  it('places the editing anchor at the centroid of final terminal positions (parallel)', () => {
     const layout = layoutCircuit(parallel3);
     expect(layout.ok).toBe(true);
 
     // In a parallel circuit, both nodes have 3+ members (rail anchors).
-    const junctions = layout.junctions.filter((j) => j.isRealJunction);
+    const junctions = layout.junctions.filter((j) => j.isAnchor);
     expect(junctions.length).toBeGreaterThanOrEqual(1);
 
     for (const jct of junctions) {
@@ -552,6 +593,25 @@ describe('rail anchor recalculation after collision resolution', () => {
     expect(railJunctions.length).toBeGreaterThanOrEqual(1);
     // Every wire endpoint should touch a terminal or a junction (no floating)
     expect(layout.renderValidation.errors.filter((e) => e.includes('floating'))).toHaveLength(0);
+  });
+
+  it('leaves a straight rail anchor as a handle and marks its actual terminal branches', () => {
+    const layout = layoutCircuit(parallel3);
+    for (const node of layout.nodes) {
+      const markers = layout.junctions.filter((junction) => junction.nodeId === node.id);
+      expect(markers.find((junction) => junction.isAnchor).isRealJunction).toBe(false);
+      expect(markers.filter((junction) => junction.isRealJunction)).toHaveLength(2);
+    }
+  });
+
+  it('places an off-spine anchor on the routed conductor without a dead-end wire', () => {
+    const layout = layoutCircuit(mixedAnalysis);
+    const node = layout.nodes.find((entry) => entry.anchorSource === 'routed-conductor');
+    expect(node).toBeTruthy();
+    const wires = layout.wires.filter((wire) => wire.node === node.id);
+    expect(wires).toHaveLength(node.members.length - 1);
+    expect(wires.every((wire) => node.members.includes(wire.from) && node.members.includes(wire.to))).toBe(true);
+    expect(layout.renderValidation.errors).toEqual([]);
   });
 
   it('keeps wires connected after collision resolution moves components', () => {

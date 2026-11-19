@@ -1,0 +1,389 @@
+{
+  "contains_circuit": true,
+  "is_circuit": true,
+  "circuit_type": "mixed",
+  "components": [
+    {
+      "id": "V1",
+      "type": "battery",
+      "visible_value": "18 V",
+      "terminals": [
+        {
+          "label": "+",
+          "description": "Positive terminal at top",
+          "position": {
+            "x": 0.15,
+            "y": 0.49
+          }
+        },
+        {
+          "label": "−",
+          "description": "Negative terminal at bottom",
+          "position": {
+            "x": 0.15,
+            "y": 0.58
+          }
+        }
+      ],
+      "confidence": 0.99,
+      "notes": null,
+      "center": {
+        "x": 0.15,
+        "y": 0.535
+      },
+      "bbox": {
+        "x": 0.13,
+        "y": 0.47,
+        "width": 0.04,
+        "height": 0.13
+      },
+      "orientation": 90,
+      "status": "confirmed"
+    },
+    {
+      "id": "R1",
+      "type": "resistor",
+      "visible_value": "3 ̀",
+      "terminals": [
+        {
+          "label": "A",
+          "description": "Left terminal",
+          "position": {
+            "x": 0.26,
+            "y": 0.18
+          }
+        },
+        {
+          "label": "B",
+          "description": "Right terminal",
+          "position": {
+            "x": 0.39,
+            "y": 0.18
+          }
+        }
+      ],
+      "confidence": 0.99,
+      "notes": null,
+      "center": {
+        "x": 0.325,
+        "y": 0.18
+      },
+      "bbox": {
+        "x": 0.26,
+        "y": 0.13,
+        "width": 0.13,
+        "height": 0.1
+      },
+      "orientation": 0,
+      "status": "confirmed"
+    },
+    {
+      "id": "R2",
+      "type": "resistor",
+      "visible_value": "6 ̀",
+      "terminals": [
+        {
+          "label": "A",
+          "description": "Top terminal",
+          "position": {
+            "x": 0.63,
+            "y": 0.26
+          }
+        },
+        {
+          "label": "B",
+          "description": "Bottom terminal",
+          "position": {
+            "x": 0.63,
+            "y": 0.74
+          }
+        }
+      ],
+      "confidence": 0.99,
+      "notes": null,
+      "center": {
+        "x": 0.63,
+        "y": 0.5
+      },
+      "bbox": {
+        "x": 0.6,
+        "y": 0.26,
+        "width": 0.06,
+        "height": 0.48
+      },
+      "orientation": 90,
+      "status": "confirmed"
+    },
+    {
+      "id": "R3",
+      "type": "resistor",
+      "visible_value": "12 ̀",
+      "terminals": [
+        {
+          "label": "A",
+          "description": "Top terminal",
+          "position": {
+            "x": 0.81,
+            "y": 0.26
+          }
+        },
+        {
+          "label": "B",
+          "description": "Bottom terminal",
+          "position": {
+            "x": 0.81,
+            "y": 0.74
+          }
+        }
+      ],
+      "confidence": 0.99,
+      "notes": null,
+      "center": {
+        "x": 0.81,
+        "y": 0.5
+      },
+      "bbox": {
+        "x": 0.78,
+        "y": 0.26,
+        "width": 0.06,
+        "height": 0.48
+      },
+      "orientation": 90,
+      "status": "confirmed"
+    }
+  ],
+  "connections": [
+    {
+      "from_component": "V1",
+      "from_terminal": "+",
+      "to_component": "R1",
+      "to_terminal": "A",
+      "confidence": 0.99,
+      "status": "confirmed"
+    },
+    {
+      "from_component": "R1",
+      "from_terminal": "B",
+      "to_component": "R2",
+      "to_terminal": "A",
+      "confidence": 0.99,
+      "status": "confirmed"
+    },
+    {
+      "from_component": "R1",
+      "from_terminal": "B",
+      "to_component": "R3",
+      "to_terminal": "A",
+      "confidence": 0.99,
+      "status": "confirmed"
+    },
+    {
+      "from_component": "R2",
+      "from_terminal": "B",
+      "to_component": "V1",
+      "to_terminal": "−",
+      "confidence": 0.99,
+      "status": "confirmed"
+    },
+    {
+      "from_component": "R3",
+      "from_terminal": "B",
+      "to_component": "V1",
+      "to_terminal": "−",
+      "confidence": 0.99,
+      "status": "confirmed"
+    }
+  ],
+  "wires": [
+    {
+      "id": "W_V1_R1",
+      "points": [
+        {
+          "x": 0.15,
+          "y": 0.49
+        },
+        {
+          "x": 0.15,
+          "y": 0.18
+        },
+        {
+          "x": 0.26,
+          "y": 0.18
+        }
+      ],
+      "from_component": "V1",
+      "from_terminal": "+",
+      "to_component": "R1",
+      "to_terminal": "A",
+      "is_junction": false,
+      "is_crossing": false,
+      "confidence": 0.99
+    },
+    {
+      "id": "W_R1_J1",
+      "points": [
+        {
+          "x": 0.39,
+          "y": 0.18
+        },
+        {
+          "x": 0.63,
+          "y": 0.18
+        }
+      ],
+      "from_component": "R1",
+      "from_terminal": "B",
+      "to_component": "R2",
+      "to_terminal": "A",
+      "is_junction": true,
+      "is_crossing": false,
+      "confidence": 0.99
+    },
+    {
+      "id": "W_J1_R3",
+      "points": [
+        {
+          "x": 0.63,
+          "y": 0.18
+        },
+        {
+          "x": 0.81,
+          "y": 0.18
+        }
+      ],
+      "from_component": "R2",
+      "from_terminal": "A",
+      "to_component": "R3",
+      "to_terminal": "A",
+      "is_junction": true,
+      "is_crossing": false,
+      "confidence": 0.99
+    },
+    {
+      "id": "W_R2_J2",
+      "points": [
+        {
+          "x": 0.63,
+          "y": 0.74
+        },
+        {
+          "x": 0.15,
+          "y": 0.74
+        }
+      ],
+      "from_component": "R2",
+      "from_terminal": "B",
+      "to_component": "V1",
+      "to_terminal": "−",
+      "is_junction": true,
+      "is_crossing": false,
+      "confidence": 0.99
+    },
+    {
+      "id": "W_R3_J2",
+      "points": [
+        {
+          "x": 0.81,
+          "y": 0.74
+        },
+        {
+          "x": 0.63,
+          "y": 0.74
+        }
+      ],
+      "from_component": "R3",
+      "from_terminal": "B",
+      "to_component": "R2",
+      "to_terminal": "B",
+      "is_junction": true,
+      "is_crossing": false,
+      "confidence": 0.99
+    },
+    {
+      "id": "W_V1_bottom",
+      "points": [
+        {
+          "x": 0.15,
+          "y": 0.58
+        },
+        {
+          "x": 0.15,
+          "y": 0.74
+        }
+      ],
+      "from_component": "V1",
+      "from_terminal": "−",
+      "to_component": "R2",
+      "to_terminal": "B",
+      "is_junction": false,
+      "is_crossing": false,
+      "confidence": 0.99
+    }
+  ],
+  "junctions": [
+    {
+      "id": "J1",
+      "position": {
+        "x": 0.63,
+        "y": 0.18
+      },
+      "members": [
+        "R1.B",
+        "R2.A",
+        "R3.A"
+      ],
+      "confidence": 0.99,
+      "status": "confirmed"
+    },
+    {
+      "id": "J2",
+      "position": {
+        "x": 0.63,
+        "y": 0.74
+      },
+      "members": [
+        "R2.B",
+        "R3.B",
+        "V1.−"
+      ],
+      "confidence": 0.99,
+      "status": "confirmed"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "N0",
+      "members": [
+        "V1.+"
+      ]
+    },
+    {
+      "id": "N1",
+      "members": [
+        "R1.A"
+      ]
+    },
+    {
+      "id": "N2",
+      "members": [
+        "R1.B",
+        "R2.A",
+        "R3.A"
+      ]
+    },
+    {
+      "id": "N3",
+      "members": [
+        "R2.B",
+        "R3.B",
+        "V1.−"
+      ]
+    }
+  ],
+  "image_width": null,
+  "image_height": null,
+  "question_text": "Test 3 — Mixed series-parallel circuit",
+  "unclear_details": [],
+  "general_notes": null,
+  "reconstruction_incomplete": false
+}

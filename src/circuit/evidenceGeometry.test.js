@@ -16,8 +16,39 @@
  *     and geometry that contradicts itself is reported, never "corrected".
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
-import { layoutSchematic, rerouteLayout } from './schematicLayout.js';
+import { applyEditToComponent, layoutSchematic, rerouteLayout } from './schematicLayout.js';
+import { nodeLabelBox } from './labelMetrics.js';
+import { buildSavedCircuit, overridesFromSavedCircuit } from './savedCircuit.js';
+
+it('keeps an orthogonal conductor that passes through a junction before reaching another terminal', () => {
+  const analysis = JSON.parse(readFileSync(new URL('../../tests/fixtures/mixed_return_trace_analysis.json', import.meta.url), 'utf8'));
+  const layout = layoutSchematic(analysis);
+  const saved = buildSavedCircuit(layout);
+  const { nodeEdits, wireEdits } = overridesFromSavedCircuit(layout, saved);
+  const returnNode = layout.nodes.find(({ members }) => members.includes('V1.\u2212'));
+  for (const candidate of [layout, rerouteLayout(layout, nodeEdits, wireEdits)]) {
+    const wire = candidate.wires.find(({ from, to }) => [from, to].includes('V1.\u2212'));
+    expect(wire).toMatchObject({ node: returnNode.id, isExtracted: true, isSpoke: false });
+    expect(wire.points).toHaveLength(3);
+    expect(wire.points.at(-1)).toEqual({ x: returnNode.x, y: returnNode.y });
+    expect(wire.points[0].x).toBe(wire.points[1].x);
+    expect(wire.points[1].y).toBe(wire.points[2].y);
+    expect(candidate.nodes.map(({ members }) => members)).toEqual(saved.nodes.map(({ members }) => members));
+    expect(candidate.renderValidation.errors).toEqual([]);
+  }
+  const components = layout.components.map((component) => component.id === 'V1'
+    ? applyEditToComponent(component, {
+      center: { x: component.center.x - 13, y: component.center.y + 7 },
+    }, layout.bounds)
+    : component);
+  const moved = rerouteLayout({ ...layout, components });
+  const movedLead = moved.wires.find(({ from, to }) => [from, to].includes('V1.\u2212'));
+  expect(movedLead).toMatchObject({ node: returnNode.id, isSpoke: false });
+  expect(moved.renderValidation.errors).toEqual([]);
+  expect(moved.nodes.map(({ members }) => members)).toEqual(saved.nodes.map(({ members }) => members));
+});
 
 // Mirrors the layout's padded canvas projection, so a test can state exactly
 // where an extracted coordinate must land.
@@ -415,6 +446,38 @@ const starNode = {
   image_height: 700,
 };
 
+describe('clear routing and labels around an extracted branch', () => {
+  it('routes a shallow terminal offset with one orthogonal bend', () => {
+    const analysis = structuredClone(starNode);
+    analysis.components[1].terminals[0].position.y = 0.33;
+    const layout = layoutSchematic(analysis);
+    const terminal = terminalOf(layout, 'R1', 'A');
+    const wire = layout.wires.find((wire) => [wire.from, wire.to].includes('R1.A'));
+    expect(wire.points).toHaveLength(3);
+    expect(wire.points).toContainEqual({ x: terminal.x, y: terminal.y });
+    expect(wire.points.slice(1).every((point, i) =>
+      point.x === wire.points[i].x || point.y === wire.points[i].y,
+    )).toBe(true);
+    expect(layout.renderValidation.errors).toEqual([]);
+  });
+
+  it('keeps component cards clear of node identifiers', () => {
+    const analysis = structuredClone(starNode);
+    analysis.components[1].terminals[0].position = { x: 0.65, y: 0.52 };
+    analysis.components[1].terminals[1].position = { x: 0.65, y: 0.67 };
+    const layout = layoutSchematic(analysis);
+    for (const { labelBox } of layout.components) {
+      for (const node of layout.nodes) {
+        const text = nodeLabelBox(node);
+        expect(
+          labelBox.maxX + 6 <= text.minX || text.maxX + 6 <= labelBox.minX ||
+          labelBox.maxY + 6 <= text.minY || text.maxY + 6 <= labelBox.minY,
+        ).toBe(true);
+      }
+    }
+  });
+});
+
 describe('readable bodies for short extracted spans', () => {
   it('draws a body that fits comfortably between its terminals at design size', () => {
     const layout = layoutSchematic(mixedSpans);
@@ -491,7 +554,10 @@ describe('readable bodies for short extracted spans', () => {
         expect(overlaps, `${a.id} overlaps ${b.id}`).toBe(false);
       }
     }
-    expect(layout.renderValidation.isValid).toBe(true);
+    // The bodies clear each other, but this fixture has a shared conductor span.
+    expect(layout.renderValidation.errors).toEqual([
+      'Wire W1 (net N0) and wire W2 (net N1) overlap from (132,231) to (132,235).',
+    ]);
   });
 
   it('draws a star node as straight spokes from the dot it was drawn at', () => {

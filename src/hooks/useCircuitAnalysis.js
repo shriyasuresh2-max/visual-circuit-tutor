@@ -92,6 +92,8 @@ export function useCircuitAnalysis() {
         // Response was not JSON
       }
 
+      if (controller.signal.aborted) return;
+
       if (!response.ok) {
         let errorMessage = `Server error ${response.status}`;
         if (data && data.detail) {
@@ -109,7 +111,7 @@ export function useCircuitAnalysis() {
 
       setAnalysisState({ status: 'success', result: data, error: null });
     } catch (err) {
-      if (err.name === 'AbortError') return; // Request was intentionally cancelled.
+      if (controller.signal.aborted || err.name === 'AbortError') return;
 
       let displayMessage = err.message || 'An unexpected error occurred.';
       if (err instanceof TypeError) {

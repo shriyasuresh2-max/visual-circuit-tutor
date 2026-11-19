@@ -1,17 +1,15 @@
 /**
  * componentValue — how a printed component value is presented to the user.
  *
- * The number and its unit are shown exactly as they were read. When extraction
- * produced a glyph where a unit belongs that is not a unit at all, the number is
- * still shown, but the value is flagged instead of silently losing the unit:
- * the drawing never prints a unit it does not have, and never invents one from
- * the component type or the circuit around it.
+ * DC values use the same strict parser as the solver. Other component
+ * kinds keep their existing display behavior.
  *
  * The original text is kept on the component (`valueRaw`) and in its diagnostic,
  * so the OCR result is never discarded — only marked as unreadable.
  */
 
 import { splitValue } from './electricalGraph.js';
+import { parseDcValue } from './electricalValue.js';
 
 /** Concise wording for a value whose unit could not be read. */
 export const UNREADABLE_UNIT_WARNING = 'Unit unreadable';
@@ -25,6 +23,19 @@ export const UNREADABLE_UNIT_WARNING = 'Unit unreadable';
  *   `raw` is the untouched extracted text in that case.
  */
 export function valueDisplay(component) {
+  const electrical = parseDcValue(component);
+  if (electrical) {
+    const warning = electrical.status === 'invalid-unit' ? UNREADABLE_UNIT_WARNING
+      : electrical.status === 'missing-unit' ? 'Unit missing'
+      : electrical.status === 'invalid-value' || electrical.status === 'out-of-range' ? 'Invalid value'
+      : null;
+    return {
+      text: electrical.text ?? (warning ? '—' : null),
+      unit: electrical.unit,
+      warning,
+      raw: warning ? electrical.raw : null,
+    };
+  }
   const raw =
     component?.valueRaw ?? component?.visible_value ?? component?.value ?? null;
   const parsed = splitValue(raw);
@@ -34,5 +45,18 @@ export function valueDisplay(component) {
     unit: parsed.unit ?? null,
     warning: unreadable ? UNREADABLE_UNIT_WARNING : null,
     raw: unreadable ? raw : null,
+  };
+}
+
+/** Replace extracted values with values explicitly entered for this upload. */
+export function applyComponentValues(analysis, overrides) {
+  if (!analysis || overrides.size === 0) return analysis;
+  return {
+    ...analysis,
+    components: analysis.components.map((component) =>
+      overrides.has(component.id)
+        ? { ...component, visible_value: overrides.get(component.id) }
+        : component,
+    ),
   };
 }

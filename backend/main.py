@@ -5,10 +5,13 @@ and returns structured circuit recognition data. It does NOT solve circuits nume
 it identifies components and connections visible in the image.
 """
 
+import json
 import logging
 import os
+import uuid
+from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -141,8 +144,11 @@ class Component(BaseModel):
     visible_value: Optional[str] = Field(
         default=None,
         description=(
-            "Exact value label shown in the image, e.g. '4 Ω', '12 V'. "
-            "Null if no value is legible."
+            "Transcribe the printed number. For a clearly legible resistance "
+            "unit use ASCII 'ohm', preserving any prefix and its case "
+            "(e.g. '4 ohm', '2.2 kohm', '470 mohm'). Use 'V' for a legible "
+            "volt sign (e.g. '12 V'). If only the number is legible, return "
+            "the number alone. Null if no number is legible."
         ),
     )
     terminals: List[Terminal] = Field(
@@ -208,7 +214,7 @@ class WirePath(BaseModel):
     id: str = Field(description="Unique wire identifier, e.g. 'W1', 'W2'")
     points: List[Point] = Field(
         default_factory=list,
-        description="Ordered polyline points tracing the wire path through the image",
+        description="Ordered points on one continuous visible conductor from the named start terminal to the named end terminal, including bends and intervening junctions",
     )
     from_component: str = Field(description="Component ID at the start of this wire")
     from_terminal: str = Field(description="Terminal label at the start")
@@ -216,7 +222,7 @@ class WirePath(BaseModel):
     to_terminal: str = Field(description="Terminal label at the end")
     is_junction: bool = Field(
         default=False,
-        description="True if the wire endpoint is at a junction dot (3+ connections)",
+        description="True if the traced path passes through a verified electrical branch junction",
     )
     is_crossing: bool = Field(
         default=False,
@@ -231,15 +237,20 @@ class WirePath(BaseModel):
 
 
 class Junction(BaseModel):
-    """A junction dot where 3+ wires/components electrically connect."""
+    """A physical branch where visible conductors electrically connect."""
     id: str = Field(description="Unique junction identifier, e.g. 'J1'")
     position: Optional[Point] = Field(
         default=None,
-        description="Normalised position of the junction dot in the image",
+        description="Normalised position of the physical branch in the image",
     )
     members: List[str] = Field(
         default_factory=list,
-        description="Terminal keys that meet at this junction, e.g. ['R1.B', 'R2.A', 'W1.to']",
+        description="Component terminal keys reached by branches of this junction, using the exact reported component IDs and labels, e.g. ['R1.B', 'R2.A']",
+    )
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    status: Optional[DetectionStatus] = Field(
+        default=None,
+        description="Use uncertain when the branch or its terminal membership cannot be verified",
     )
 
 
@@ -248,7 +259,7 @@ class NodeGroup(BaseModel):
     id: str = Field(description="Node identifier, e.g. 'N0', 'N1'")
     members: List[str] = Field(
         default_factory=list,
-        description="Terminal keys belonging to this node, e.g. ['V1.+', 'R1.A']",
+        description="Terminal keys on one verified continuous conductor network, each assigned to at most one node group",
     )
 
 
@@ -270,7 +281,7 @@ class CircuitAnalysis(BaseModel):
     )
     junctions: List[Junction] = Field(
         default_factory=list,
-        description="Junction dots where 3+ connections meet",
+        description="Physical branching points where visible conductors electrically join",
     )
     nodes: List[NodeGroup] = Field(
         default_factory=list,
@@ -350,37 +361,56 @@ FOR EACH COMPONENT you must report:
 - status: "confirmed" for clear identifications, "probable" for likely but
   uncertain ones, "uncertain" for unclear ones.
 
-FOR EACH TERMINAL, report its normalised position in the image if you can
-determine it.
+FOR EACH PHYSICAL TERMINAL, report its position where the conductor meets the
+symbol, when visible. Assign each label to a physical end once and reuse that
+exact terminal key everywhere. Keep the opposite ends of a symbol distinct.
 
 WIRES:
-- For every wire segment connecting components, report a WirePath with:
+- Follow the visible conductor from each terminal through bends and verified
+  branches. Stop at gaps, other component bodies, or ambiguous intersections.
+- Report traceable terminal-to-terminal paths as WirePath records with:
   - An ordered list of points tracing the wire's path through the image
     (include bends and turns — do NOT simplify a bent wire to a straight line)
   - The component and terminal at each end
-  - is_junction: true if the wire ends at a visible junction dot
-  - is_crossing: true if this wire crosses another wire WITHOUT a junction dot
+  - is_junction: true if the path passes through a verified electrical branch
+  - is_crossing: true if the path crosses another wire without joining it
   - confidence (0–1)
 
 JUNCTIONS:
-- For every visible junction dot (where 3+ wires/components meet), report a
-  Junction with its position and the terminal keys that meet there.
+- Report the visible position of each electrical branch. A clear T-join or a
+  dot joining branches is evidence of contact. Crossing lines that continue
+  independently are separate. If contact is ambiguous, mark the junction
+  uncertain or omit it and describe the ambiguity.
+- List only component terminal keys that can be followed from this branch.
+  Do not use wire endpoint IDs or use printed node letters as terminal keys.
 
 CONNECTIONS:
-- Record which terminal of which component is joined to which terminal of
-  which other component. Two terminals that share a junction dot are the same
-  electrical node.
+- Derive pairwise connections and node groups from the same set of verified
+  traces and branch contacts. Multiple paths through a network may lead to the
+  same node. Never connect through a component body.
 - Give each connection a confidence score and status (confirmed/probable/uncertain).
-- Distinguish a real junction (visible dot) from a CROSSING WITHOUT connection.
-  If you are unsure whether a crossing is a junction, set status to "uncertain"
-  and explain in notes. Do NOT silently guess.
+- If the path is uncertain, record it as uncertain and leave it out of verified
+  node membership. Describe which terminals or conductor span are ambiguous.
 
 NODES:
-- If you can identify which terminals share the same electrical node, report
-  them as NodeGroups.
+- Group terminals by continuous verified conductors. Branches and bends do not
+  split a node. Assign each terminal to at most one node group.
+- Before returning, check that every confirmed connection, verified trace, and
+  confirmed junction agrees with the node groups and uses defined terminals.
+  If they disagree, retrace the image. When the conflict remains unresolved,
+  omit disputed memberships, mark disputed claims uncertain, set
+  reconstruction_incomplete, and describe the conflict in unclear_details.
+- Infer circuit_type only after tracing. Never use circuit type, component
+  names, expected loop counts, or typical arrangements to fill missing links.
 
 CRITICAL — what you must NOT do:
 - Do NOT invent component values that are not printed clearly in the image.
+- Transcribe a legible ohm unit as ASCII "ohm", never as a symbol. Keep
+  printed prefixes and their case: use "kohm" for kiloohms, "mohm" for
+  milliohms and "Mohm" for megaohms. Check every resistor value before
+  submitting: use "ohm" only when the printed unit is clear. If only the
+  number is legible, report it without a unit and note the uncertainty in
+  unclear_details. Do not infer units from component type.
 - Do NOT guess connections that are not clearly drawn.
 - Do NOT add a connection merely to close a circuit or complete a loop.
 - Do NOT connect wires just because they visually cross without a junction dot.
@@ -407,6 +437,147 @@ _USER_CONTENT = (
     "Report normalised coordinates where possible. Be precise and honest about "
     "anything unclear — mark uncertain detections rather than guessing."
 )
+
+
+def flag_connectivity_issues(result: CircuitAnalysis) -> None:
+    """Keep conflicting evidence for reconciliation and flag it for the caller."""
+    if not result.contains_circuit:
+        return
+
+    def terminal_key(key: str) -> str:
+        component, separator, label = key.strip().rpartition(".")
+        return f"{component}{separator}{label.strip().replace('−', '-')}"
+
+    terminals = {
+        terminal_key(f"{component.id}.{terminal.label}")
+        for component in result.components
+        for terminal in component.terminals
+    }
+    memberships: dict[str, set[str]] = {}
+    issues: list[str] = []
+    review_notes: list[str] = []
+    group_sizes: dict[str, int] = {}
+    for node in result.nodes:
+        group_sizes[node.id] = group_sizes.get(node.id, 0) + len(node.members)
+        for member in node.members:
+            key = terminal_key(member)
+            if key in terminals:
+                memberships.setdefault(key, set()).add(node.id)
+            else:
+                issues.append(f"Node {node.id} references unknown terminal {member}.")
+    review_memberships = memberships.copy()
+    for key, groups in memberships.items():
+        if len(groups) > 1:
+            message = f"Terminal {key} belongs to multiple reported nodes: {', '.join(sorted(groups))}."
+            populated = {group for group in groups if group_sizes[group] > 1}
+            if len(populated) == 1:
+                # Defer a redundant singleton candidate to the graph's trace
+                # checks. Keep the original memberships in the response.
+                review_memberships[key] = populated
+                review_notes.append(message)
+            else:
+                issues.append(message)
+
+    def check_claim(name: str, keys: list[str], verified: bool, direct: bool = False) -> None:
+        unknown = set(keys) - terminals
+        if unknown:
+            issues.append(f"{name} references unknown terminals: {', '.join(sorted(unknown))}.")
+        if not verified:
+            return
+        groups = {group for key in keys for group in review_memberships.get(key, set())}
+        if len(groups) > 1:
+            message = f"{name} spans different reported nodes: {', '.join(sorted(groups))}."
+            # The frontend reconciler has the trace checks needed to decide
+            # whether two isolated endpoint declarations are actually one net.
+            if direct and len(groups) == 2 and all(len(memberships.get(key, ())) == 1 for key in keys) \
+                    and all(group_sizes[group] == 1 for group in groups):
+                review_notes.append(message)
+            else:
+                issues.append(message)
+
+    for connection in result.connections:
+        start = terminal_key(f"{connection.from_component}.{connection.from_terminal}")
+        end = terminal_key(f"{connection.to_component}.{connection.to_terminal}")
+        check_claim(
+            f"Connection {start} to {end}", [start, end],
+            connection.status != DetectionStatus.uncertain and connection.confidence >= 0.7,
+            direct=True,
+        )
+    for junction in result.junctions:
+        check_claim(
+            f"Junction {junction.id}", [terminal_key(member) for member in junction.members],
+            junction.status != DetectionStatus.uncertain
+            and (junction.confidence is None or junction.confidence >= 0.7),
+        )
+    for wire in result.wires:
+        start = terminal_key(f"{wire.from_component}.{wire.from_terminal}")
+        end = terminal_key(f"{wire.to_component}.{wire.to_terminal}")
+        check_claim(f"Wire {wire.id}", [start, end], False)
+        if len({(point.x, point.y) for point in wire.points}) < 2:
+            issues.append(f"Wire {wire.id} has no usable conductor span.")
+
+    if issues:
+        result.reconstruction_incomplete = True
+    if issues or review_notes:
+        result.unclear_details = list(dict.fromkeys([*result.unclear_details, *issues, *review_notes]))
+
+
+# ---------------------------------------------------------------------------
+# Opt-in debug capture of the analysis output
+# ---------------------------------------------------------------------------
+
+def save_debug_analysis(
+    result: CircuitAnalysis,
+    response: Any,
+    model: str,
+) -> None:
+    """
+    Write the validated analysis (and Gemini's raw JSON) to a timestamped file
+    when GEMINI_DEBUG_DIR is set. Does nothing otherwise.
+
+    This is strictly diagnostic. The directory is created on demand, and any
+    failure — bad permissions, full disk, unserialisable payload — is logged
+    and swallowed, so a successful analysis is never turned into an error
+    response. Only the analysis payload is written: never the uploaded image
+    bytes, the API key, or any other credential.
+    """
+    try:
+        debug_dir = (os.getenv("GEMINI_DEBUG_DIR") or "").strip()
+        if not debug_dir:
+            return
+
+        captured_at = datetime.now(timezone.utc)
+        # `.text` is a property that raises when the response carries no
+        # candidate text, so treat that as "raw text unavailable" rather than
+        # losing the parsed payload with it.
+        try:
+            raw_text = response.text
+        except Exception:
+            raw_text = None
+
+        payload = {
+            "captured_at": captured_at.isoformat(),
+            "model": model,
+            # What the application will actually use.
+            "parsed": result.model_dump(mode="json"),
+            # What the model actually returned, verbatim (None if unavailable).
+            "raw_response_text": raw_text or None,
+        }
+
+        os.makedirs(debug_dir, exist_ok=True)
+        filename = (
+            f"analysis_{captured_at.strftime('%Y%m%dT%H%M%S_%fZ')}"
+            f"_{uuid.uuid4().hex[:8]}.json"
+        )
+        path = os.path.join(debug_dir, filename)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+
+        logger.info(f"Saved debug analysis capture to {path}")
+    except Exception:
+        # A diagnostic aid must never break the request it is observing.
+        logger.warning("Could not save debug analysis capture", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -589,5 +760,11 @@ async def analyze_image(file: UploadFile = File(...)):
         result.is_circuit = result.contains_circuit
     if result.contains_circuit is None:
         result.contains_circuit = result.is_circuit
+
+    flag_connectivity_issues(result)
+
+    # Optional diagnostic capture; a no-op unless GEMINI_DEBUG_DIR is set.
+    # Reads the validated model only and never mutates it.
+    save_debug_analysis(result, response, model)
 
     return result

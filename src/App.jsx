@@ -4,9 +4,13 @@ import WorkspaceHeader from './components/WorkspaceHeader.jsx';
 import WorkspaceParametersStrip from './components/WorkspaceParametersStrip.jsx';
 import WorkspaceCalculatedStrip from './components/WorkspaceCalculatedStrip.jsx';
 import CircuitDiagram from './components/CircuitDiagram.jsx';
+import DcSolvePanel from './components/DcSolvePanel.jsx';
+import AnalysisResultPanel from './components/AnalysisResultPanel.jsx';
 import StepExplainer from './components/StepExplainer.jsx';
 import ReferenceViewer from './components/ReferenceViewer.jsx';
 import { solveOhmSeriesCircuit } from './circuit/circuitEngine.js';
+import { buildGraph } from './circuit/electricalGraph.js';
+import { applyComponentValues } from './circuit/componentValue.js';
 import { useCircuitAnalysis } from './hooks/useCircuitAnalysis.js';
 import './App.css';
 
@@ -25,6 +29,11 @@ export default function App() {
   const [imageFile, setImageFile] = useState(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
 
+  // The question the student wants answered. Entered on the landing page and
+  // held here so it survives navigation to the workspace and stays available
+  // to the solving stage.
+  const [questionText, setQuestionText] = useState('');
+
   // The circuit the user saved after editing. Kept apart from the uploaded
   // image and the question so neither is ever overwritten by an edit, and
   // handed to the solving stage as the circuit to solve.
@@ -36,12 +45,38 @@ export default function App() {
   const [savedCircuitImageId, setSavedCircuitImageId] = useState(null);
   const [imageId, setImageId] = useState(null);
   const imageIdSeq = useRef(0);
+  const [componentValues, setComponentValues] = useState(() => new Map());
+  const [lessonFocus, setLessonFocus] = useState(null);
 
   // Reference Viewer Drawer State (in workspace)
   const [isReferenceOpen, setIsReferenceOpen] = useState(false);
 
   // Circuit analysis state managed by the custom hook
   const { analysisState, analyzeImage, clearAnalysis } = useCircuitAnalysis();
+  const extractedAnalysis = analysisState.status === 'success' ? analysisState.result : null;
+  const analysisResult = useMemo(
+    () => applyComponentValues(extractedAnalysis, componentValues),
+    [extractedAnalysis, componentValues],
+  );
+  const electricalGraph = useMemo(
+    () => analysisResult?.contains_circuit !== false && analysisResult?.components?.length
+      ? buildGraph(analysisResult)
+      : null,
+    [analysisResult],
+  );
+
+  const handleApplyComponentValues = useCallback((updates) => {
+    if (updates.size > 0) setComponentValues((previous) => new Map([...previous, ...updates]));
+  }, []);
+  const handleLessonStep = useCallback((step) => {
+    setLessonFocus((previous) => {
+      if (step) return { step, graph: electricalGraph, imageId };
+      return previous?.graph === electricalGraph && previous?.imageId === imageId ? null : previous;
+    });
+  }, [electricalGraph, imageId]);
+  const lessonStep = lessonFocus && lessonFocus.graph === electricalGraph && lessonFocus.imageId === imageId
+    ? lessonFocus.step
+    : null;
 
   // Accept a freshly saved circuit from the diagram's editor, tagged with the
   // upload it came from.
@@ -87,6 +122,7 @@ export default function App() {
     setImageId(imageIdSeq.current);
     setSavedCircuit(null);
     setSavedCircuitImageId(null);
+    setComponentValues(new Map());
   }, [imagePreviewUrl, analyzeImage, clearAnalysis]);
 
   // Handle image removal: revoke URL, clear image and analysis state
@@ -101,6 +137,7 @@ export default function App() {
     setImageId(null);
     setSavedCircuit(null);
     setSavedCircuitImageId(null);
+    setComponentValues(new Map());
   }, [imagePreviewUrl, clearAnalysis]);
 
   // Cleanup object URL on unmount
@@ -132,6 +169,27 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
 
+  const exampleParameters = (
+    <>
+      <WorkspaceParametersStrip
+        voltage={voltage}
+        resistance={resistance}
+        onVoltageChange={setVoltage}
+        onResistanceChange={setResistance}
+        error={circuitResult.error}
+      />
+      <WorkspaceCalculatedStrip circuitResult={circuitResult} />
+    </>
+  );
+  const exampleSteps = (
+    <StepExplainer
+      steps={circuitResult.steps}
+      activeStep={activeStep}
+      onStepChange={setActiveStep}
+      isValid={circuitResult.isValid}
+    />
+  );
+
   return (
     <div className="app-root">
       {currentView === 'landing' ? (
@@ -143,6 +201,8 @@ export default function App() {
           onImageRemoved={handleImageRemoved}
           onContinueToWorkspace={() => setCurrentView('workspace')}
           analysisState={analysisState}
+          questionText={questionText}
+          onQuestionChange={setQuestionText}
         />
       ) : (
         /* PAGE TWO: CIRCUIT LEARNING WORKSPACE */
@@ -156,43 +216,41 @@ export default function App() {
             onToggleReference={() => setIsReferenceOpen((prev) => !prev)}
           />
 
-          {/* 2. Horizontal Circuit Parameters Strip */}
-          <WorkspaceParametersStrip
-            voltage={voltage}
-            resistance={resistance}
-            onVoltageChange={setVoltage}
-            onResistanceChange={setResistance}
-            error={circuitResult.error}
-          />
-
-          {/* 3. Horizontal Calculated Values Strip */}
-          <WorkspaceCalculatedStrip circuitResult={circuitResult} />
-
-          {/* 4. Main Two-Column Area: Circuit (55-60%) and Explanation (40-45%) Side by Side */}
+          {!imageFile && exampleParameters}
           <main className="workspace-main-grid">
             <section className="circuit-column" aria-label="Circuit Schematic Visualisation">
-              <CircuitDiagram
-                circuitResult={circuitResult}
-                activeStep={activeStep}
-                onSelectStep={setActiveStep}
-                analysisResult={analysisState.status === 'success' ? analysisState.result : null}
-                onSaveCircuit={handleCircuitSaved}
-                imageId={imageId}
-                savedCircuit={
-                  savedCircuitImageId !== null && savedCircuitImageId === imageId
-                    ? savedCircuit
-                    : null
-                }
-              />
+              {imageFile && !electricalGraph ? (
+                <AnalysisResultPanel analysisState={analysisState} />
+              ) : (
+                <CircuitDiagram
+                  circuitResult={circuitResult}
+                  activeStep={activeStep}
+                  onSelectStep={setActiveStep}
+                  analysisResult={analysisResult}
+                  electricalGraph={electricalGraph}
+                  lessonStep={lessonStep}
+                  reconstructionKey={extractedAnalysis}
+                  onSaveCircuit={handleCircuitSaved}
+                  imageId={imageId}
+                  savedCircuit={
+                    savedCircuitImageId !== null && savedCircuitImageId === imageId
+                      ? savedCircuit
+                      : null
+                  }
+                />
+              )}
             </section>
 
-            <section className="explanation-column" aria-label="Step-by-Step Educational Explanation">
-              <StepExplainer
-                steps={circuitResult.steps}
-                activeStep={activeStep}
-                onStepChange={setActiveStep}
-                isValid={circuitResult.isValid}
-              />
+            <section className="explanation-column" aria-label="Circuit solution and explanation">
+              {imageFile ? electricalGraph && (
+                <DcSolvePanel
+                  key={imageId}
+                  graph={electricalGraph}
+                  onApplyValues={handleApplyComponentValues}
+                  questionText={questionText}
+                  onStepChange={handleLessonStep}
+                />
+              ) : exampleSteps}
             </section>
           </main>
 

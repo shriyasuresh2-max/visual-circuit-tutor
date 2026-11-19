@@ -290,6 +290,23 @@ function uniquePush(list, value) {
   if (value != null && !list.includes(value)) list.push(value);
 }
 
+function terminalSets() {
+  const parent = new Map();
+  const find = (key) => {
+    if (!parent.has(key)) parent.set(key, key);
+    let root = key;
+    while (parent.get(root) !== root) root = parent.get(root);
+    parent.set(key, root);
+    return root;
+  };
+  const union = (a, b) => {
+    const left = find(a);
+    const right = find(b);
+    if (left !== right) parent.set(right, left);
+  };
+  return { find, union };
+}
+
 function sortProvenance(kinds) {
   return [...kinds].sort(
     (x, y) => PROVENANCE_STRENGTH.indexOf(x) - PROVENANCE_STRENGTH.indexOf(y),
@@ -353,6 +370,67 @@ function aggregateNotes(sources) {
     if (note) uniquePush(notes, note);
   }
   return notes.length ? notes.join(' | ') : null;
+}
+
+const TERMINAL_CONTACT_TOLERANCE = 1e-6;
+const STRONG_EVIDENCE = 0.85;
+const pointIsFinite = (p) => Number.isFinite(p?.x) && Number.isFinite(p?.y);
+const pointDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const cross = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+
+function touchesSpan(point, a, b) {
+  if (!pointIsFinite(point)) return false;
+  const tolerance = TERMINAL_CONTACT_TOLERANCE;
+  return point.x >= Math.min(a.x, b.x) - tolerance && point.x <= Math.max(a.x, b.x) + tolerance &&
+    point.y >= Math.min(a.y, b.y) - tolerance && point.y <= Math.max(a.y, b.y) + tolerance &&
+    Math.abs(cross(a, b, point)) <= tolerance * pointDistance(a, b);
+}
+
+function spansTouch(a, b, c, d) {
+  return touchesSpan(a, c, d) || touchesSpan(b, c, d) ||
+    touchesSpan(c, a, b) || touchesSpan(d, a, b) ||
+    (cross(a, b, c) * cross(a, b, d) < 0 && cross(c, d, a) * cross(c, d, b) < 0);
+}
+
+function traceSpans(wire) {
+  const points = wire.points ?? wire.path;
+  if (!Array.isArray(points) || !points.every(pointIsFinite)) return [];
+  return points.slice(1).map((point, i) => [points[i], point]);
+}
+
+/** A direct, isolated trace can corroborate an already confirmed pair.
+ * This never promotes an inferred wire or substitutes layout coordinates. */
+function corroboratingTrace(edge, traces, terminalPositions, junctions) {
+  const { from, to } = edge;
+  if (splitTerminalKey(from)?.component === splitTerminalKey(to)?.component ||
+      !edge.claims.some((claim) => claim.kind === PROVENANCE.EXPLICIT &&
+        claim.status === 'confirmed' && claim.confidence >= STRONG_EVIDENCE) ||
+      junctions.some(({ members }) => members.includes(from) || members.includes(to))) return null;
+
+  const incident = traces.filter(({ ends }) => ends && [ends.a, ends.b].some((key) => key === from || key === to));
+  if (incident.length !== 1) return null;
+  const [trace] = incident;
+  const { wire, ends, spans } = trace;
+  if (wire.id == null || unorderedPair(ends.a, ends.b) !== unorderedPair(from, to) ||
+      !(statedConfidence(wire) >= STRONG_EVIDENCE) || statedStatus(wire) === 'uncertain' ||
+      wire.is_crossing || wire.is_junction || !spans.length ||
+      spans.some(([a, b]) => pointDistance(a, b) <= TERMINAL_CONTACT_TOLERANCE)) return null;
+
+  const start = terminalPositions.get(ends.a);
+  const finish = terminalPositions.get(ends.b);
+  if (!pointIsFinite(start) || !pointIsFinite(finish) ||
+      pointDistance(start, spans[0][0]) > TERMINAL_CONTACT_TOLERANCE ||
+      pointDistance(finish, spans.at(-1)[1]) > TERMINAL_CONTACT_TOLERANCE) return null;
+
+  const foreignPoints = [...terminalPositions].filter(([key]) => key !== from && key !== to)
+    .map(([, point]) => point);
+  foreignPoints.push(...junctions.map(({ junction }) => junction.position));
+  const foreignSpans = traces.filter((other) => other !== trace).flatMap(({ spans: segments }) => segments);
+  if (spans.some(([a, b], i) => foreignPoints.some((point) => touchesSpan(point, a, b)) ||
+      foreignSpans.some(([c, d]) => spansTouch(a, b, c, d)) ||
+      (i > 0 && (touchesSpan(b, spans[i - 1][0], a) || touchesSpan(spans[i - 1][0], a, b))) ||
+      spans.slice(i + 2).some(([c, d]) => spansTouch(a, b, c, d)))) return null;
+  return wire;
 }
 
 /* ------------------------------------------------------------------ *
@@ -449,6 +527,12 @@ export function reconcileTopology(sanitizedAnalysis) {
   /* Traced wires are evidence too: index them by the terminal pair they join. */
   const wireIdsByPair = new Map();
   for (const wire of wires) {
+    const points = wire.points ?? wire.path;
+    if (!Array.isArray(points) || !points.slice(1).some((point) =>
+      point && points[0] && (point.x !== points[0].x || point.y !== points[0].y))) {
+      addDiagnostic('incomplete-wire-trace', 'warning',
+        `Wire ${wire.id ?? '(unnamed)'} has no usable conductor span.`, { wireId: wire.id ?? null });
+    }
     const ends = connectionEndpoints(wire);
     if (!ends) {
       if (wire.from_component != null || wire.to_component != null || wire.from != null || wire.to != null) {
@@ -489,6 +573,9 @@ export function reconcileTopology(sanitizedAnalysis) {
     explicitEndpoints.add(claim.ends.b);
   }
 
+  const groupRecords = [];
+  const memberCountByGroup = new Map();
+  const groupsByTerminal = new Map();
   for (const group of nodeGroups) {
     const groupId = group?.id == null ? null : String(group.id);
     const rawMembers = Array.isArray(group?.members) ? group.members : [];
@@ -505,7 +592,59 @@ export function reconcileTopology(sanitizedAnalysis) {
         );
       }
     }
-    if (members.length < 2) continue;
+    if (groupId != null && classifyConnection(group).confirmed) {
+      memberCountByGroup.set(groupId, (memberCountByGroup.get(groupId) ?? 0) + rawMembers.length);
+      for (const key of members) {
+        if (!groupsByTerminal.has(key)) groupsByTerminal.set(key, new Set());
+        groupsByTerminal.get(key).add(groupId);
+      }
+    }
+    groupRecords.push({ group, members });
+  }
+  const declaredNode = new Map();
+  const contested = new Set();
+  const traces = wires.map((wire) => ({ wire, ends: connectionEndpoints(wire), spans: traceSpans(wire) }));
+  const terminalPositions = new Map(components.flatMap((component) =>
+    (component.terminals ?? []).map((terminal) => [termKey(component.id, terminal.label), terminal.position])));
+  for (const [terminal, ids] of groupsByTerminal) {
+    if (ids.size === 1) {
+      declaredNode.set(terminal, ids.values().next().value);
+      continue;
+    }
+
+    // An extra singleton may repeat a terminal already on a populated net.
+    // Its declaration adds no peer. Keep the populated assignment only when
+    // an independent, isolated trace backs an explicit link to a peer that
+    // is itself unambiguously assigned to that group.
+    const populated = [...ids].filter((id) => memberCountByGroup.get(id) > 1);
+    const incident = claims.filter(({ ends }) => ends.a === terminal || ends.b === terminal);
+    if (populated.length === 1 && incident.length === 1) {
+      const [groupId] = populated;
+      const [{ ends, origin }] = incident;
+      const peer = ends.a === terminal ? ends.b : ends.a;
+      const peerGroups = groupsByTerminal.get(peer);
+      if (peerGroups?.size === 1 && peerGroups.has(groupId) && classifyConnection(origin).confirmed) {
+        const wire = corroboratingTrace({
+          from: terminal, to: peer,
+          claims: [{ kind: PROVENANCE.EXPLICIT, status: statedStatus(origin), confidence: statedConfidence(origin) }],
+        }, traces, terminalPositions, junctionRecords);
+        if (wire) {
+          declaredNode.set(terminal, groupId);
+          addDiagnostic('redundant-singleton-assignment-resolved', 'info',
+            `Terminal ${terminal} belongs to ${groupId} via confirmed connection to ${peer} and isolated trace ${wire.id}; redundant singleton declarations were ignored.`,
+            { terminal, peer, nodeGroupId: groupId, wireId: wire.id });
+          continue;
+        }
+      }
+    }
+
+    contested.add(terminal);
+    addDiagnostic('conflicting-terminal-assignment', 'warning',
+      `Terminal ${terminal} is assigned to multiple declared nodes (${[...ids].join(', ')}); those assignments were withheld.`,
+      { terminal, nodeGroupIds: [...ids] });
+  }
+  for (const { group, members: reported } of groupRecords) {
+    const members = reported.filter((key) => !contested.has(key));
     // Star from the first member, exactly like the union-find pass it replaces.
     for (let i = 1; i < members.length; i += 1) {
       claims.push({
@@ -522,26 +661,37 @@ export function reconcileTopology(sanitizedAnalysis) {
      short a branch, and would merge two confirmed sources that disagree. Record
      those assignments first, so a dot can extend connectivity onto terminals
      nothing else has placed, but can never contradict what was stated outright. */
-  const assignedByStronger = new Set();
-  const strongerParent = new Map();
-  const strongerFind = (key) => {
-    if (!strongerParent.has(key)) strongerParent.set(key, key);
-    let root = key;
-    while (strongerParent.get(root) !== root) root = strongerParent.get(root);
-    strongerParent.set(key, root);
-    return root;
-  };
-  const strongerUnion = (a, b) => {
-    const ra = strongerFind(a);
-    const rb = strongerFind(b);
-    if (ra !== rb) strongerParent.set(ra, rb);
-  };
+  const assignedByStronger = new Set(declaredNode.keys());
+  const stronger = terminalSets();
+  const strongerPairs = new Map();
   for (const claim of claims) {
-    if (claim.kind === PROVENANCE.INFERRED_WIRE) continue;
-    if (!classifyConnection(claim.origin).confirmed) continue;
-    assignedByStronger.add(claim.ends.a);
-    assignedByStronger.add(claim.ends.b);
-    strongerUnion(claim.ends.a, claim.ends.b);
+    const { a, b } = claim.ends;
+    if (!validKeys.has(a) || !validKeys.has(b) || a === b) continue;
+    const pair = unorderedPair(a, b);
+    if (!strongerPairs.has(pair)) strongerPairs.set(pair, { a, b, sources: [] });
+    strongerPairs.get(pair).sources.push({ kind: claim.kind, record: claim.origin });
+  }
+  for (const { a, b, sources } of strongerPairs.values()) {
+    const status = aggregateStatus(sources.map(({ record }) => record));
+    const confidence = aggregateConnectionConfidence(sources);
+    if (!classifyConnection({ status, confidence }).confirmed) continue;
+    assignedByStronger.add(a);
+    assignedByStronger.add(b);
+    stronger.union(a, b);
+  }
+
+  // Resolve linked junctions together. Two individually compatible dots can
+  // otherwise join distinct nets through a shared unassigned terminal.
+  const junctionSets = terminalSets();
+  for (const { junction, members } of junctionRecords) {
+    if (!classifyConnection(junction).confirmed) continue;
+    for (const key of members.slice(1)) junctionSets.union(members[0], key);
+  }
+  const placementsByCluster = new Map();
+  for (const key of assignedByStronger) {
+    const cluster = junctionSets.find(key);
+    if (!placementsByCluster.has(cluster)) placementsByCluster.set(cluster, []);
+    placementsByCluster.get(cluster).push(key);
   }
 
   /* A junction dot is a picture of one electrical node, so its resolved
@@ -556,28 +706,32 @@ export function reconcileTopology(sanitizedAnalysis) {
      threshold stays provisional and merges no terminals. */
   for (const { junction, junctionId, members } of junctionRecords) {
     if (members.length < 2) continue;
-    // A dot whose already-placed members sit on different nodes contradicts the
-    // stronger evidence outright. The whole dot is withheld rather than partly
-    // applied: its remaining members are unassigned, so picking a side for them
-    // would be a guess, and applying only some pairs would still join the
-    // clusters transitively.
-    const placed = members.filter((key) => assignedByStronger.has(key));
-    const placedRoots = new Set(placed.map(strongerFind));
-    if (placedRoots.size > 1) {
+    const placed = placementsByCluster.get(junctionSets.find(members[0])) ?? [];
+    let groups = [members];
+    if (classifyConnection(junction).confirmed && new Set(placed.map(stronger.find)).size > 1) {
+      const supported = new Map();
+      for (const key of members) {
+        if (!assignedByStronger.has(key)) continue;
+        const root = stronger.find(key);
+        if (!supported.has(root)) supported.set(root, []);
+        supported.get(root).push(key);
+      }
+      groups = [...supported.values()].filter((group) => group.length > 1);
       addDiagnostic(
         'junction-conflicts-with-evidence',
         'warning',
-        `Junction ${junctionId ?? '(unnamed)'} groups ${members.join(', ')}, but confirmed connections already place ${placed.join(', ')} on different nodes; the dot was not merged.`,
-        { junctionId, members, conflicting: placed },
+        `Junction ${junctionId ?? '(unnamed)'} groups ${members.join(', ')}. Its junction evidence spans distinct nodes (${placed.join(', ')}); ambiguous assignments were withheld.`,
+        { junctionId, members, conflicting: placed, retained: groups },
       );
-      continue;
     }
-    for (let i = 1; i < members.length; i += 1) {
-      claims.push({
-        ends: endsFromKeys(members[0], members[i]),
-        kind: PROVENANCE.JUNCTION,
-        origin: junction,
-      });
+    for (const group of groups) {
+      for (const key of group.slice(1)) {
+        claims.push({
+          ends: endsFromKeys(group[0], key),
+          kind: PROVENANCE.JUNCTION,
+          origin: junction,
+        });
+      }
     }
   }
 
@@ -783,21 +937,56 @@ export function reconcileTopology(sanitizedAnalysis) {
      membership was ignored: it means either that the dot's own evidence was
      withheld by the confidence policy, or that confirmed evidence from an
      independent source puts its members on different nodes. */
+  // An unassigned region may attach to one declared node. If it borders
+  // multiple declared nodes, preserve its internal evidence and withhold all
+  // competing attachments. This avoids picking a net based on input order.
+  const unassigned = terminalSets();
+  const regions = new Map();
+  for (const { from, to, confirmed } of edges) {
+    if (confirmed && !declaredNode.has(from) && !declaredNode.has(to)) unassigned.union(from, to);
+  }
+  for (const { from, to, confirmed } of edges) {
+    if (!confirmed || declaredNode.has(from) === declaredNode.has(to)) continue;
+    const [known, unknown] = declaredNode.has(from) ? [from, to] : [to, from];
+    const root = unassigned.find(unknown);
+    if (!regions.has(root)) regions.set(root, new Set());
+    regions.get(root).add(declaredNode.get(known));
+  }
+  const edgeCountByTerminal = new Map();
+  for (const { from, to } of edges) {
+    for (const key of [from, to]) edgeCountByTerminal.set(key, (edgeCountByTerminal.get(key) ?? 0) + 1);
+  }
+  for (const edge of edges) {
+    if (!edge.confirmed) continue;
+    const fromNode = declaredNode.get(edge.from);
+    const toNode = declaredNode.get(edge.to);
+    if (fromNode == null && toNode == null) continue;
+    const candidates = fromNode != null && toNode != null
+      ? new Set([fromNode, toNode])
+      : regions.get(unassigned.find(fromNode == null ? edge.from : edge.to));
+    if (!candidates || candidates.size < 2) continue;
+    // A split between two lone, uncontested terminals can be a redundant
+    // declaration of the endpoints of one wire. Keep the confirmed edge only
+    // when there are no competing attachments and its own trace verifies it.
+    if (memberCountByGroup.get(fromNode) === 1 && memberCountByGroup.get(toNode) === 1 &&
+        edgeCountByTerminal.get(edge.from) === 1 && edgeCountByTerminal.get(edge.to) === 1) {
+      const wire = corroboratingTrace(edge, traces, terminalPositions, junctionRecords);
+      if (wire) {
+        addDiagnostic('singleton-declarations-resolved', 'info',
+          `Confirmed connection ${edge.from} to ${edge.to} is corroborated by isolated trace ${wire.id}; the two singleton declarations describe one conductor.`,
+          { from: edge.from, to: edge.to, wireId: wire.id, nodeGroupIds: [fromNode, toNode] });
+        continue;
+      }
+    }
+    edge.confirmed = false;
+    edge.reason = 'declared-node-conflict';
+    addDiagnostic('declared-node-conflict', 'warning',
+      `Connection evidence for ${edge.from} and ${edge.to} was withheld because it would join distinct declared nodes (${[...candidates].join(', ')}).`,
+      { from: edge.from, to: edge.to, nodeGroupIds: [...candidates], provenance: edge.provenance });
+  }
   const confirmedEdges = edges.filter((edge) => edge.confirmed);
   if (junctionRecords.length) {
-    const parent = new Map();
-    const find = (key) => {
-      if (!parent.has(key)) parent.set(key, key);
-      let root = key;
-      while (parent.get(root) !== root) root = parent.get(root);
-      parent.set(key, root);
-      return root;
-    };
-    const union = (a, b) => {
-      const ra = find(a);
-      const rb = find(b);
-      if (ra !== rb) parent.set(ra, rb);
-    };
+    const { find, union } = terminalSets();
     for (const edge of confirmedEdges) union(edge.from, edge.to);
     for (const { junctionId, members } of junctionRecords) {
       if (members.length < 2) continue;

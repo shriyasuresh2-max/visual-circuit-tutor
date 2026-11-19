@@ -127,9 +127,9 @@ export default function AnalysisResultPanel({ analysisState }) {
         <div>
           <p className="analysis-panel-title">SVG format not supported by vision API</p>
           <p className="analysis-panel-body">
-            The sample circuit is an SVG vector file. The Gemini vision model
-            requires a raster image. To analyse your own circuit, upload a{' '}
-            <strong>PNG, JPG, or WebP</strong> screenshot or photo instead.
+            SVG is a vector format. The Gemini vision model requires a raster
+            image. Upload a <strong>PNG, JPG, or WebP</strong> screenshot or
+            photo of your circuit instead.
           </p>
         </div>
       </div>

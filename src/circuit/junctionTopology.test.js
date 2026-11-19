@@ -212,6 +212,83 @@ describe('junction evidence never overrides stronger confirmed evidence', () => 
     expect(sameNode(g, 'P2.A', 'P2.B')).toBe(false);
     expect(codes(g)).toContain('junction-conflicts-with-evidence');
   });
+
+  it('retains the independently supported part of a split dot and leaves its ambiguous member open', () => {
+    const g = buildGraph(analysis({
+      components: ['P', 'Q', 'R', 'S', 'T'].map((id) => part(id)),
+      connections: [link('P', 'A', 'Q', 'A'), link('R', 'A', 'S', 'A')],
+      junctions: [dot('branch', ['T.A', 'R.A', 'P.A', 'Q.A'])],
+    }));
+    expect(edgeFor(g, 'P.A', 'Q.A')[0].provenance).toContain(PROVENANCE.JUNCTION);
+    expect(sameNode(g, 'P.A', 'R.A')).toBe(false);
+    expect(nodeSize(g, 'T.A')).toBe(1);
+    expect(g.diagnostics.find((d) => d.code === 'junction-conflicts-with-evidence').retained)
+      .toEqual([['P.A', 'Q.A']]);
+    expect(g.validation.warnings).toContainEqual(expect.stringContaining('T.A (possible orphan)'));
+    expect(g.incomplete).toBe(true);
+  });
+
+  it('withholds a chain of individually plausible dots that together join distinct established nets', () => {
+    const junctions = [dot('left', ['P.A', 'T.A']), dot('right', ['T.A', 'R.A'])];
+    for (const ordered of [junctions, [...junctions].reverse()]) {
+      const g = buildGraph(analysis({
+        components: ['P', 'Q', 'R', 'S', 'T'].map((id) => part(id)),
+        connections: [link('P', 'A', 'Q', 'A'), link('R', 'A', 'S', 'A')],
+        junctions: ordered,
+      }));
+      expect(sameNode(g, 'P.A', 'Q.A')).toBe(true);
+      expect(sameNode(g, 'R.A', 'S.A')).toBe(true);
+      expect(sameNode(g, 'P.A', 'R.A')).toBe(false);
+      expect(nodeSize(g, 'T.A')).toBe(1);
+      expect(codes(g).filter((code) => code === 'junction-conflicts-with-evidence')).toHaveLength(2);
+    }
+  });
+});
+
+describe('declared node partitions', () => {
+  it('preserves uncontested group members when one terminal is assigned twice', () => {
+    const g = buildGraph(analysis({
+      components: ['P', 'Q', 'T'].map((id) => part(id)),
+      nodes: [
+        { id: 'left', members: ['P.A', 'Q.A', 'T.A'] },
+        { id: 'right', members: ['P.B', 'Q.B', 'T.A'] },
+      ],
+    }));
+    expect(sameNode(g, 'P.A', 'Q.A')).toBe(true);
+    expect(sameNode(g, 'P.B', 'Q.B')).toBe(true);
+    expect(sameNode(g, 'P.A', 'P.B')).toBe(false);
+    expect(nodeSize(g, 'T.A')).toBe(1);
+    expect(codes(g)).toContain('conflicting-terminal-assignment');
+  });
+
+  it('preserves an unassigned region while withholding direct and transitive cross-net claims', () => {
+    const g = buildGraph(analysis({
+      components: ['P', 'Q', 'T', 'U'].map((id) => part(id)),
+      nodes: [{ id: 'left', members: ['P.A', 'Q.A'] }, { id: 'right', members: ['P.B', 'Q.B'] }],
+      connections: [
+        link('P', 'A', 'T', 'A'), link('T', 'A', 'U', 'A'),
+        link('U', 'A', 'P', 'B'), link('Q', 'A', 'Q', 'B'),
+      ],
+    }));
+    expect(sameNode(g, 'T.A', 'U.A')).toBe(true);
+    expect(sameNode(g, 'P.A', 'Q.A')).toBe(true);
+    expect(sameNode(g, 'P.B', 'Q.B')).toBe(true);
+    expect(sameNode(g, 'P.A', 'P.B')).toBe(false);
+    expect(sameNode(g, 'P.A', 'T.A')).toBe(false);
+    expect(sameNode(g, 'P.B', 'U.A')).toBe(false);
+    expect(g.provisional.map((edge) => edge.reason)).toEqual(Array(3).fill('declared-node-conflict'));
+    expect(g.validation.warnings).toContainEqual(expect.stringContaining('Reported connection Q.A to Q.B is split'));
+  });
+
+  it('does not present a fully populated but contradictory graph as complete', () => {
+    const g = buildGraph(analysis({
+      components: [part('P'), part('Q')],
+      connections: [link('P', 'A', 'Q', 'A'), link('P', 'B', 'Q', 'B')],
+      junctions: [dot('unclear-branch', ['P.A', 'P.B'])],
+    }));
+    expect(g.nodes.map((n) => n.members.length)).toEqual([2, 2]);
+    expect(g.incomplete).toBe(true);
+  });
 });
 
 describe('junction confidence and status', () => {
@@ -250,6 +327,42 @@ describe('junction confidence and status', () => {
 });
 
 describe('reconciliation is topology-independent', () => {
+  it('preserves a multi-loop bridge from physical junctions without joining crossing wires', () => {
+    const junctions = [
+      dot('north', ['P.A', 'Q.A', 'S.A']),
+      dot('west', ['P.B', 'R.A', 'T.A']),
+      dot('east', ['Q.B', 'U.A', 'T.B']),
+      dot('south', ['R.B', 'U.B', 'S.B']),
+    ];
+    const g = buildGraph(analysis({
+      components: ['P', 'Q', 'R', 'S', 'T', 'U'].map((id) => part(id)),
+      junctions,
+      wires: [
+        link('P', 'B', 'R', 'A', { id: 'w1', is_crossing: true, points: [{ x: 0, y: 0.5 }, { x: 1, y: 0.5 }] }),
+        link('Q', 'B', 'U', 'A', { id: 'w2', is_crossing: true, points: [{ x: 0.5, y: 0 }, { x: 0.5, y: 1 }] }),
+      ],
+    }));
+    expect(g.nodes.map((node) => [...node.members].sort())).toEqual(
+      junctions.map((junction) => [...junction.members].sort()),
+    );
+    expect(g.crossings.map((crossing) => crossing.wireId)).toEqual(['w1', 'w2']);
+    expect(g.incomplete).toBe(false);
+  });
+
+  it('reports a degenerate trace that disagrees with the confirmed graph', () => {
+    const g = buildGraph(analysis({
+      components: [part('P'), part('Q')],
+      connections: [link('P', 'A', 'Q', 'A'), link('P', 'B', 'Q', 'B')],
+      wires: [link('P', 'A', 'Q', 'B', {
+        id: 'broken', points: [{ x: 0.5, y: 0.5 }, { x: 0.5, y: 0.5 }],
+      })],
+    }));
+    expect(codes(g)).toEqual(expect.arrayContaining(['incomplete-wire-trace', 'wire-trace-node-disagreement']));
+    expect(g.validation.warnings).toContainEqual(expect.stringContaining('Wire broken'));
+    expect(sameNode(g, 'P.A', 'Q.B')).toBe(false);
+    expect(g.incomplete).toBe(true);
+  });
+
   it('builds unrelated shapes from junction evidence alone', () => {
     const chain = buildGraph(analysis({
       components: [part('P1'), part('P2'), part('P3')],

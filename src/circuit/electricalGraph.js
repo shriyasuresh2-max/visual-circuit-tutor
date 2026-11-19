@@ -25,6 +25,7 @@ import {
   splitTerminalKey,
   termKey,
 } from './topologyReconciliation.js';
+import { parseDcValue } from './electricalValue.js';
 
 /* ------------------------------------------------------------------ *
  * Union-Find (shared with circuitLayout.js — kept here for independence)
@@ -350,7 +351,13 @@ export function buildGraph(analysis) {
         }
       : null;
 
-    const drawn = splitValue(c.visible_value);
+    const parsedValue = parseDcValue(c);
+    const drawn = parsedValue ? {
+      value: parsedValue.text,
+      unit: parsedValue.unit,
+      rawUnit: parsedValue.rawUnit,
+      unitRecognized: parsedValue.status !== 'invalid-unit',
+    } : splitValue(c.visible_value);
     return {
       id: c.id,
       type: c.type,
@@ -435,6 +442,19 @@ export function buildGraph(analysis) {
   const provisional = topology.edges.filter((edge) => !edge.confirmed);
 
   const diagnostics = [...topology.diagnostics];
+  for (const wire of graphWires) {
+    const fromNode = nodeOf.get(wire.from);
+    const toNode = nodeOf.get(wire.to);
+    if (fromNode == null || toNode == null || fromNode === toNode) continue;
+    diagnostics.push({
+      code: 'wire-trace-node-disagreement',
+      severity: 'warning',
+      message: `Wire ${wire.id ?? '(unnamed)'} claims a path from ${wire.from} (${fromNode}) to ${wire.to} (${toNode}); its endpoints are on different reconstructed nodes.`,
+      wireId: wire.id ?? null,
+      from: wire.from,
+      to: wire.to,
+    });
+  }
   for (const c of graphComponents) {
     if (c.valueUnitRecognized === false) {
       diagnostics.push({
@@ -465,6 +485,16 @@ export function buildGraph(analysis) {
     crossings,
     connections: sanitized.connections,
   });
+  const unresolvedTopology = new Set([
+    'conflicting-terminal-assignment', 'declared-node-conflict',
+    'junction-conflicts-with-evidence', 'junction-members-split',
+    'wire-trace-node-disagreement',
+  ]);
+  for (const diagnostic of diagnostics) {
+    if (unresolvedTopology.has(diagnostic.code) || diagnostic.code === 'incomplete-wire-trace') {
+      validation.warnings.push(diagnostic.message);
+    }
+  }
 
   return {
     nodes,
@@ -483,6 +513,7 @@ export function buildGraph(analysis) {
     incomplete:
       Boolean(sanitized.reconstruction_incomplete) ||
       provisional.length > 0 ||
+      diagnostics.some((diagnostic) => unresolvedTopology.has(diagnostic.code)) ||
       hasOpenTerminals(nodes) ||
       !validation.isValid,
     reconstruction_incomplete: Boolean(sanitized.reconstruction_incomplete),
@@ -558,7 +589,8 @@ export function validateAnalysis(analysis) {
       ...w,
       from_terminal: normalizeLabel(w.from_terminal),
       to_terminal: normalizeLabel(w.to_terminal),
-      points: (w.points || w.path || []).map(sanitizePoint).filter(Boolean),
+      points: (Array.isArray(w.points) ? w.points : Array.isArray(w.path) ? w.path : [])
+        .map(sanitizePoint).filter(Boolean),
     }));
 
   const junctions = (Array.isArray(analysis.junctions) ? analysis.junctions : [])
@@ -608,6 +640,10 @@ export function validateGraph(graph) {
 
   const componentIds = new Set(components.map((c) => c.id));
   const terminalKeys = new Set();
+  const nodeByTerminal = new Map();
+  for (const node of nodes) {
+    for (const key of node.members) nodeByTerminal.set(key, node.id);
+  }
   for (const c of components) {
     for (const t of c.terminals) {
       terminalKeys.add(`${c.id}.${t.label}`);
@@ -644,6 +680,10 @@ export function validateGraph(graph) {
       }
       if (!terminalKeys.has(toKey)) {
         warnings.push(`Connection references unknown terminal: ${toKey}`);
+      }
+      if (classifyConnection(conn).confirmed && nodeByTerminal.has(fromKey) &&
+          nodeByTerminal.has(toKey) && nodeByTerminal.get(fromKey) !== nodeByTerminal.get(toKey)) {
+        warnings.push(`Reported connection ${fromKey} to ${toKey} is split across reconstructed nodes ${nodeByTerminal.get(fromKey)} and ${nodeByTerminal.get(toKey)}.`);
       }
     }
   }

@@ -1,6 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Upload, FileImage, ArrowRight, RefreshCw, BookOpen, AlertCircle } from 'lucide-react';
-import { createSampleCircuitFile } from '../utils/sampleCircuit.js';
+import { Upload, FileImage, ArrowRight, RefreshCw, AlertCircle } from 'lucide-react';
 import AnalysisResultPanel from './AnalysisResultPanel.jsx';
 
 export default function LandingPage({
@@ -10,6 +9,8 @@ export default function LandingPage({
   onImageRemoved,
   onContinueToWorkspace,
   analysisState,
+  questionText = '',
+  onQuestionChange,
 }) {
   const fileInputRef = useRef(null);
   const [dragActive, setDragActive] = useState(false);
@@ -65,17 +66,6 @@ export default function LandingPage({
     fileInputRef.current?.click();
   };
 
-  const handleLoadSample = () => {
-    const { file, previewUrl } = createSampleCircuitFile();
-    onImageSelected(file, previewUrl);
-  };
-
-  const handleSampleAndContinue = () => {
-    const { file, previewUrl } = createSampleCircuitFile();
-    onImageSelected(file, previewUrl);
-    onContinueToWorkspace();
-  };
-
   return (
     <div className="landing-page-container">
       {/* Minimal Header */}
@@ -91,11 +81,26 @@ export default function LandingPage({
         <div className="landing-hero-copy">
           <h1 className="landing-title">Understand circuits, one step at a time.</h1>
           <p className="landing-subtitle">
-            Upload an image of a textbook circuit problem or start with a sample to explore step-by-step visual analysis.
+            Upload an image of a textbook circuit problem to explore step-by-step visual analysis.
           </p>
         </div>
 
-        {/* Central Prominent Upload Area */}
+        {/* Step 1 — the question to answer, carried into the workspace */}
+        <section className="landing-question-section" aria-label="Your question">
+          <label className="landing-question-label" htmlFor="landing-problem-question">
+            What would you like to find out?
+          </label>
+          <textarea
+            id="landing-problem-question"
+            className="landing-question-input"
+            value={questionText}
+            onChange={(e) => onQuestionChange?.(e.target.value)}
+            placeholder="Example: What is the current through R1? Leave blank for a step-by-step nodal analysis."
+            rows={4}
+          />
+        </section>
+
+        {/* Step 2 — Central Prominent Upload Area */}
         <section className="central-upload-container" aria-label="Circuit problem image upload">
           <input
             ref={fileInputRef}
@@ -195,21 +200,6 @@ export default function LandingPage({
             <div className="landing-error-banner" role="alert">
               <AlertCircle size={16} />
               <span>{errorMessage}</span>
-            </div>
-          )}
-
-          {/* Secondary Sample Action (when no image selected) */}
-          {!imagePreviewUrl && (
-            <div className="landing-secondary-actions">
-              <span className="secondary-divider-text">Don't have a circuit diagram handy?</span>
-              <button
-                type="button"
-                onClick={handleSampleAndContinue}
-                className="btn-try-sample"
-              >
-                <BookOpen size={15} />
-                <span>Try a sample circuit</span>
-              </button>
             </div>
           )}
 
