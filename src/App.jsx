@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import LandingPage from './components/LandingPage.jsx';
 import WorkspaceHeader from './components/WorkspaceHeader.jsx';
 import WorkspaceParametersStrip from './components/WorkspaceParametersStrip.jsx';
@@ -25,11 +25,30 @@ export default function App() {
   const [imageFile, setImageFile] = useState(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
 
+  // The circuit the user saved after editing. Kept apart from the uploaded
+  // image and the question so neither is ever overwritten by an edit, and
+  // handed to the solving stage as the circuit to solve.
+  const [savedCircuit, setSavedCircuit] = useState(null);
+
+  // Which upload `savedCircuit` belongs to. A saved document is only ever used
+  // for the image it was produced from, so a remount of the diagram cannot
+  // mistake it for a different circuit's save.
+  const [savedCircuitImageId, setSavedCircuitImageId] = useState(null);
+  const [imageId, setImageId] = useState(null);
+  const imageIdSeq = useRef(0);
+
   // Reference Viewer Drawer State (in workspace)
   const [isReferenceOpen, setIsReferenceOpen] = useState(false);
 
   // Circuit analysis state managed by the custom hook
   const { analysisState, analyzeImage, clearAnalysis } = useCircuitAnalysis();
+
+  // Accept a freshly saved circuit from the diagram's editor, tagged with the
+  // upload it came from.
+  const handleCircuitSaved = useCallback((circuit, sourceImageId = null) => {
+    setSavedCircuit(circuit);
+    setSavedCircuitImageId(sourceImageId);
+  }, []);
 
   // Derive circuit solution using pure engine logic
   const circuitResult = useMemo(() => {
@@ -61,6 +80,13 @@ export default function App() {
     // Clear any previous analysis result before starting a new one
     clearAnalysis();
     analyzeImage(file);
+
+    // A saved circuit belongs to the image it was edited from, so a new upload
+    // starts a new identity and a clean slate.
+    imageIdSeq.current += 1;
+    setImageId(imageIdSeq.current);
+    setSavedCircuit(null);
+    setSavedCircuitImageId(null);
   }, [imagePreviewUrl, analyzeImage, clearAnalysis]);
 
   // Handle image removal: revoke URL, clear image and analysis state
@@ -72,6 +98,9 @@ export default function App() {
     setImagePreviewUrl(null);
     setIsReferenceOpen(false);
     clearAnalysis();
+    setImageId(null);
+    setSavedCircuit(null);
+    setSavedCircuitImageId(null);
   }, [imagePreviewUrl, clearAnalysis]);
 
   // Cleanup object URL on unmount
@@ -147,6 +176,13 @@ export default function App() {
                 activeStep={activeStep}
                 onSelectStep={setActiveStep}
                 analysisResult={analysisState.status === 'success' ? analysisState.result : null}
+                onSaveCircuit={handleCircuitSaved}
+                imageId={imageId}
+                savedCircuit={
+                  savedCircuitImageId !== null && savedCircuitImageId === imageId
+                    ? savedCircuit
+                    : null
+                }
               />
             </section>
 

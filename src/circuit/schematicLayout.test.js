@@ -21,6 +21,7 @@ import {
 } from './schematicLayout.js';
 import { buildGraph, sameNode } from './electricalGraph.js';
 import fixtureAnalysis from '../../tests/fixtures/sample_extracted_analysis.json';
+import mixedAnalysis from '../../tests/fixtures/mixed_series_parallel_analysis.json';
 
 /* ------------------------------------------------------------------ *
  * Fixtures: topologies, not pictures
@@ -313,7 +314,13 @@ describe('schematicLayout — invariants across arbitrary topologies', () => {
         for (const c of layout.components) {
           const span = Math.max(Math.abs(c.x2 - c.x1), Math.abs(c.y2 - c.y1));
           expect(span).toBeLessThanOrEqual(MAX_DRAWN_SPAN);
-          expect(span).toBeGreaterThanOrEqual(MIN_DRAWN_SPAN);
+          // A length the image reported is kept as drawn, even when it is
+          // shorter than the layout's own minimum — the terminals are evidence
+          // and the body shrinks to fit them. Only an estimated length has to
+          // reach the minimum.
+          if (c.lengthSource !== 'extracted') {
+            expect(span).toBeGreaterThanOrEqual(MIN_DRAWN_SPAN);
+          }
           // The two terminals must lie on one axis
           expect(c.x1 === c.x2 || c.y1 === c.y2).toBe(true);
           // The symbol body always fits inside its terminals
@@ -327,14 +334,21 @@ describe('schematicLayout — invariants across arbitrary topologies', () => {
           const ends = wireEndpoints(layout).filter(
             (e) => Math.hypot(e.point.x - j.x, e.point.y - j.y) <= 2,
           ).length;
-          const atDot = layout.components.reduce(
-            (n, c) => n + c.terminals.filter((t) => Math.hypot(t.x - j.x, t.y - j.y) <= 2).length,
-            0,
-          );
-          // Every member of the node must visibly meet at the dot: through its
-          // own wire, or because its terminal sits on the anchor.
+          // The dot marks a point ON its node's network: wires meet there, and
+          // the marker sits on the conductor itself, not beside it.
           expect(ends, `junction ${j.id} is not where wires meet`).toBeGreaterThanOrEqual(2);
-          expect(ends + atDot, `junction ${j.id} does not join its members`).toBeGreaterThanOrEqual(3);
+          const onConductor = layout.wires
+            .filter((w) => w.node === j.nodeId)
+            .some((w) => w.points.some((p, i) => {
+              if (Math.abs(p.x - j.x) <= 0.5 && Math.abs(p.y - j.y) <= 0.5) return true;
+              if (i === 0) return false;
+              const a = w.points[i - 1];
+              return (
+                (a.x === p.x && Math.abs(j.x - p.x) <= 0.5 && j.y >= Math.min(a.y, p.y) - 0.5 && j.y <= Math.max(a.y, p.y) + 0.5) ||
+                (a.y === p.y && Math.abs(j.y - p.y) <= 0.5 && j.x >= Math.min(a.x, p.x) - 0.5 && j.x <= Math.max(a.x, p.x) + 0.5)
+              );
+            }));
+          expect(onConductor, `junction ${j.id} is not on its node's wiring`).toBe(true);
         }
         for (const n of layout.nodes) {
           expect(n.isJunction).toBe(n.degree >= 3);
@@ -696,10 +710,19 @@ describe('edited layouts stay honest', () => {
     expect({ x: movedJunction.x, y: movedJunction.y }).toEqual(target);
     expect(next.nodes.find((n) => n.id === node.id)).toMatchObject(target);
 
+    // The dragged dot is a point on this node's network: wires reach it, and
+    // every member keeps its wire.
+    const nodeWires = next.wires.filter((w) => w.node === node.id);
+    expect(nodeWires.length).toBeGreaterThan(0);
+    expect(
+      nodeWires.some((w) => w.points.some(
+        (p) => Math.abs(p.x - target.x) <= 1 && Math.abs(p.y - target.y) <= 1,
+      )),
+      'no wire reaches the dragged junction',
+    ).toBe(true);
     for (const member of node.members) {
-      const wire = next.wires.find((w) => w.from === member || w.to === member);
-      expect(wire).toBeTruthy();
-      expect(wire.points[wire.points.length - 1]).toEqual(target);
+      expect(next.wires.find((w) => w.from === member || w.to === member), `${member} lost its wire`)
+        .toBeTruthy();
     }
     expect(next.renderValidation.errors).toEqual([]);
   });
@@ -1320,5 +1343,266 @@ describe('manual wire segment editing', () => {
       expect(next.nodes.map((n) => ({ id: n.id, members: n.members })))
         .toEqual(base.nodes.map((n) => ({ id: n.id, members: n.members })));
     });
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * One electrical node must be one connected drawing
+ *
+ * The analysed wires and the analysed junction dot routinely disagree by a
+ * few pixels: a traced conductor runs through a terminal without a vertex
+ * there, and a second traced run hangs around a dot that sits just off the
+ * conductor. The picture reads as joined while the validator, which unions
+ * exact wire coordinates, reports the node as drawn disconnected.
+ * ------------------------------------------------------------------ */
+
+describe('node wiring is assembled from the electrical graph', () => {
+  const branch = (id, value, x) => ({
+    id,
+    type: 'resistor',
+    visible_value: value,
+    confidence: 0.9,
+    center: { x, y: 0.45 },
+    orientation: 90,
+    terminals: [
+      { label: 'A', position: { x, y: 0.2 } },
+      { label: 'B', position: { x, y: 0.7 } },
+    ],
+  });
+
+  // Battery feeding three parallel branches. The top node's traced geometry is
+  // two separate pieces: the rail that runs over R1.A and R2.A to R3.A, and a
+  // loop from R1.A to R2.A passing under the extracted junction dot. The pieces
+  // overlap in the picture but share no coordinate; the bottom rail runs over
+  // two terminals without vertices at them.
+  const splitNodeAnalysis = {
+    contains_circuit: true,
+    circuit_type: 'parallel',
+    image_width: 640,
+    image_height: 400,
+    components: [
+      {
+        id: 'V1',
+        type: 'battery',
+        visible_value: '12 V',
+        confidence: 0.9,
+        center: { x: 0.2, y: 0.55 },
+        orientation: 90,
+        terminals: [
+          { label: '+', position: { x: 0.2, y: 0.4 } },
+          { label: '−', position: { x: 0.2, y: 0.7 } },
+        ],
+      },
+      branch('R1', '4 Ω', 0.4),
+      branch('R2', '6 Ω', 0.62),
+      branch('R3', '8 Ω', 0.82),
+    ],
+    connections: [
+      { from_component: 'V1', from_terminal: '+', to_component: 'R1', to_terminal: 'A', confidence: 0.9 },
+      { from_component: 'R1', from_terminal: 'A', to_component: 'R2', to_terminal: 'A', confidence: 0.9 },
+      { from_component: 'R2', from_terminal: 'A', to_component: 'R3', to_terminal: 'A', confidence: 0.9 },
+      { from_component: 'V1', from_terminal: '−', to_component: 'R1', to_terminal: 'B', confidence: 0.9 },
+      { from_component: 'R1', from_terminal: 'B', to_component: 'R2', to_terminal: 'B', confidence: 0.9 },
+      { from_component: 'R2', from_terminal: 'B', to_component: 'R3', to_terminal: 'B', confidence: 0.9 },
+    ],
+    wires: [
+      {
+        id: 'T1',
+        from_component: 'V1',
+        from_terminal: '+',
+        to_component: 'R3',
+        to_terminal: 'A',
+        confidence: 0.9,
+        points: [{ x: 0.2, y: 0.4 }, { x: 0.2, y: 0.2 }, { x: 0.82, y: 0.2 }],
+      },
+      {
+        id: 'T2',
+        from_component: 'R1',
+        from_terminal: 'A',
+        to_component: 'R2',
+        to_terminal: 'A',
+        confidence: 0.9,
+        points: [{ x: 0.4, y: 0.2 }, { x: 0.4, y: 0.3 }, { x: 0.62, y: 0.3 }, { x: 0.62, y: 0.2 }],
+      },
+      {
+        id: 'T3',
+        from_component: 'V1',
+        from_terminal: '−',
+        to_component: 'R3',
+        to_terminal: 'B',
+        confidence: 0.9,
+        points: [{ x: 0.2, y: 0.7 }, { x: 0.82, y: 0.7 }],
+      },
+    ],
+    junctions: [
+      {
+        id: 'J1',
+        position: { x: 0.51, y: 0.3 },
+        members: ['V1.+', 'R1.A', 'R2.A', 'R3.A'],
+      },
+    ],
+  };
+
+  it('joins every member of a node whose traced pieces share no vertex', () => {
+    const layout = layoutCircuit(splitNodeAnalysis);
+    expect(layout.renderValidation.errors).toEqual([]);
+    expect(layout.renderValidation.isValid).toBe(true);
+
+    for (const node of layout.nodes) {
+      if (node.members.length < 2) continue;
+      const nodeWires = layout.wires.filter((w) => w.node === node.id);
+      // Every member terminal is a drawn vertex of the node's wiring...
+      for (const key of node.members) {
+        const [compId, label] = key.split('.');
+        const terminal = layout.components.find((c) => c.id === compId)?.terminals.find((t) => t.label === label);
+        expect(terminal, `terminal ${key} missing from the drawing`).toBeDefined();
+        const isVertex = nodeWires.some((w) => w.points.some((p) => p.x === terminal.x && p.y === terminal.y));
+        expect(isVertex, `${key} is not a vertex of node ${node.id}`).toBe(true);
+      }
+      // ...and those wires form a single network under the validator's rule.
+      const parent = nodeWires.map((_, i) => i);
+      const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+      const owner = new Map();
+      nodeWires.forEach((wire, i) => {
+        for (const p of wire.points) {
+          const key = `${p.x},${p.y}`;
+          if (owner.has(key)) {
+            const a = find(i);
+            const b = find(owner.get(key));
+            if (a !== b) parent[a] = b;
+          } else owner.set(key, i);
+        }
+      });
+      const roots = new Set(nodeWires.map((_, i) => find(i)));
+      expect(roots.size, `node ${node.id} is drawn as ${roots.size} disconnected pieces`).toBe(1);
+    }
+  });
+
+  it('gives every wire its own identity, stable across reroutes', () => {
+    for (const [name, analysis] of Object.entries({ split: splitNodeAnalysis, mixed: mixedAnalysis })) {
+      const layout = layoutCircuit(analysis);
+      const keys = layout.wires.map(wireOverrideKey);
+      const ids = layout.wires.map((w) => w.id);
+
+      // An override is applied by matching its key, so a duplicated key would
+      // move two wires when one is dragged.
+      expect(new Set(keys).size, `${name}: two wires share an override key`).toBe(keys.length);
+      expect(new Set(ids).size, `${name}: two wires share an id`).toBe(ids.length);
+      for (const key of keys) {
+        expect(layout.wires.filter((w) => wireOverrideKey(w) === key)).toHaveLength(1);
+      }
+
+      // Rerouting must not renumber the wires: a stored override has to keep
+      // pointing at the same wire.
+      const once = rerouteLayout(layout);
+      expect(once.wires.map(wireOverrideKey), `${name}: keys changed on reroute`).toEqual(keys);
+      expect(rerouteLayout(once).wires.map(wireOverrideKey)).toEqual(keys);
+    }
+  });
+
+  it('draws a multi-terminal node without detours or ties', () => {
+    for (const [name, analysis] of Object.entries({
+      split: splitNodeAnalysis,
+      series: fixtureAnalysis,
+      mixed: mixedAnalysis,
+    })) {
+      const layout = layoutCircuit(analysis);
+      expect(layout.renderValidation.isValid, `${name} should validate`).toBe(true);
+
+      for (const node of layout.nodes) {
+        // Multi-terminal nodes are the ones the renderer draws as a network;
+        // a two-terminal connection may legitimately follow a traced path.
+        if (!node.isJunction) continue;
+        const wires = layout.wires.filter((w) => w.node === node.id);
+        if (wires.length === 0) continue;
+        const points = [];
+        for (const key of node.members) {
+          const [id, label] = key.split('.');
+          const t = layout.components.find((c) => c.id === id)?.terminals.find((x) => x.label === label);
+          if (t) points.push(t);
+        }
+        points.push(node);
+        const box = {
+          minX: Math.min(...points.map((p) => p.x)),
+          maxX: Math.max(...points.map((p) => p.x)),
+          minY: Math.min(...points.map((p) => p.y)),
+          maxY: Math.max(...points.map((p) => p.y)),
+        };
+
+        for (const wire of wires) {
+          // A node's wiring never runs outside the box its own terminals and
+          // dot occupy: no loops past the last terminal, no tails.
+          for (const p of wire.points) {
+            expect(
+              p.x >= box.minX - 2 && p.x <= box.maxX + 2 && p.y >= box.minY - 2 && p.y <= box.maxY + 2,
+              `${name}: ${wire.id} leaves node ${node.id}'s own geometry at (${p.x},${p.y})`,
+            ).toBe(true);
+          }
+          // Nor does it double back on itself.
+          for (let i = 1; i < wire.points.length - 1; i += 1) {
+            const a = wire.points[i - 1];
+            const b = wire.points[i];
+            const c = wire.points[i + 1];
+            const back = Math.sign(b.x - a.x) === -Math.sign(c.x - b.x) &&
+              Math.sign(b.y - a.y) === -Math.sign(c.y - b.y) &&
+              (b.x !== a.x || b.y !== a.y);
+            expect(back, `${name}: ${wire.id} reverses direction at (${b.x},${b.y})`).toBe(false);
+          }
+        }
+
+        // The dot marks a conductor: it lies on the node's own wiring.
+        const onSegment = (p, a, b) => (
+          (a.x === b.x && p.x === a.x && p.y >= Math.min(a.y, b.y) && p.y <= Math.max(a.y, b.y)) ||
+          (a.y === b.y && p.y === a.y && p.x >= Math.min(a.x, b.x) && p.x <= Math.max(a.x, b.x))
+        );
+        const dotOnWire = wires.some((w) => w.points.some((p, i) => (
+          (p.x === node.x && p.y === node.y) || (i > 0 && onSegment(node, w.points[i - 1], p))
+        )));
+        expect(dotOnWire, `${name}: dot of node ${node.id} is not on its wiring`).toBe(true);
+      }
+    }
+  });
+});
+
+describe('unconnected terminals', () => {
+  // One diagonal component with only one end connected: the open end must still
+  // be drawn as generated geometry, and generated geometry is never diagonal.
+  const diagonalOpen = {
+    contains_circuit: true,
+    circuit_type: 'mixed',
+    components: [
+      {
+        id: 'V1', type: 'battery', visible_value: '9 V', confidence: 1,
+        center: { x: 0.12, y: 0.5 },
+        terminals: [
+          { label: '+', position: { x: 0.12, y: 0.32 } },
+          { label: '−', position: { x: 0.12, y: 0.68 } },
+        ],
+      },
+      {
+        id: 'R1', type: 'resistor', visible_value: '4 Ω', confidence: 1,
+        orientation: -45,
+        center: { x: 0.52, y: 0.38 },
+        terminals: [
+          { label: 'A', position: { x: 0.45, y: 0.31 } },
+          { label: 'B', position: { x: 0.59, y: 0.45 } },
+        ],
+      },
+    ],
+    connections: [conn('V1', '+', 'R1', 'A')],
+  };
+
+  it('draws an open stub orthogonally even when the component is diagonal', () => {
+    const layout = layoutCircuit(diagonalOpen);
+    const open = layout.wires.filter((w) => String(w.to ?? '').startsWith('OPEN:'));
+    expect(open.length).toBeGreaterThan(0);
+    for (const wire of open) {
+      for (let i = 1; i < wire.points.length; i += 1) {
+        const a = wire.points[i - 1];
+        const b = wire.points[i];
+        expect(a.x === b.x || a.y === b.y, `${wire.id} leaves the terminal diagonally`).toBe(true);
+      }
+    }
+    expect(layout.renderValidation.errors.filter((e) => e.includes('diagonal'))).toEqual([]);
   });
 });

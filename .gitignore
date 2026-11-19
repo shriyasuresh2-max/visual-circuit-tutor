@@ -14,3 +14,6 @@ backend/__pycache__/
 **/__pycache__/
 *.pyc
 *.pyo
+
+# Backend — opt-in GEMINI_DEBUG_DIR analysis captures (real circuit data)
+debug_analyses/

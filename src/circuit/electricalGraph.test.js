@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildGraph, validateGraph, validateAnalysis, computeNodes, findCycle, sameNode, componentsAtNode } from './electricalGraph.js';
+import { buildGraph, validateGraph, validateAnalysis, computeNodes, findCycle, sameNode, componentsAtNode, splitValue } from './electricalGraph.js';
 
 /* ------------------------------------------------------------------ *
  * Test fixtures — various circuit topologies with and without geometry
@@ -350,6 +350,37 @@ describe('validateAnalysis — extraction sanitization', () => {
     expect(analysis.components[0].center.x).toBe(0);
     expect(analysis.components[0].center.y).toBe(1);
     expect(analysis.components[0].terminals[1].label).toBe('−');
+  });
+});
+
+describe('component values — units the image printed', () => {
+  it('keeps a real unit exactly as extracted', () => {
+    expect(splitValue('4 Ω')).toEqual({ value: '4 Ω', unit: 'Ω', unitRecognized: true, rawUnit: 'Ω' });
+    expect(splitValue('10 V').value).toBe('10 V');
+  });
+
+  it('never prints a stray glyph as if it were a unit', () => {
+    const value = splitValue('100 \u0386');
+    expect(value.value).toBe('100');
+    expect(value.unit).toBeNull();
+    expect(value.unitRecognized).toBe(false);
+    expect(value.rawUnit).toBe('\u0386');
+  });
+
+  it('leaves a unit it does not know untouched rather than rewriting it', () => {
+    expect(splitValue('2 A h').value).toBe('2 A h');
+    expect(splitValue('1/4 W').value).toBe('1/4 W');
+  });
+
+  it('reports an unreadable unit instead of guessing one', () => {
+    const graph = buildGraph({
+      ...SERIES,
+      components: SERIES.components.map((c) => (c.id === 'R1' ? { ...c, visible_value: '4 \u0386' } : c)),
+    });
+    const r1 = graph.components.find((c) => c.id === 'R1');
+    expect(r1.value).toBe('4');
+    expect(r1.valueUnitRecognized).toBe(false);
+    expect(graph.diagnostics.some((d) => d.code === 'value-unit-unreadable' && d.componentId === 'R1')).toBe(true);
   });
 });
 

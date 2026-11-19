@@ -7,6 +7,7 @@
  */
 import React from 'react';
 import { Loader2, AlertCircle, CheckCircle2, Info, FileWarning } from 'lucide-react';
+import { valueDisplay } from '../circuit/componentValue.js';
 
 // Human-readable labels for enum values coming from the backend.
 const CIRCUIT_TYPE_LABELS = {
@@ -53,6 +54,7 @@ function ConfidenceDot({ value }) {
 }
 
 function ComponentCard({ component }) {
+  const shown = valueDisplay(component);
   return (
     <div className="analysis-component-card">
       <div className="analysis-component-header">
@@ -62,9 +64,14 @@ function ComponentCard({ component }) {
         </span>
         <ConfidenceDot value={component.confidence} />
       </div>
-      {component.visible_value && (
+      {shown.text && (
         <div className="analysis-component-value">
-          Value: <strong>{component.visible_value}</strong>
+          Value: <strong>{shown.text}</strong>
+          {shown.warning && (
+            <span className="unit-warning" title={`Extracted as “${shown.raw}”`}>
+              {shown.warning}
+            </span>
+          )}
         </div>
       )}
       {component.terminals.length > 0 && (

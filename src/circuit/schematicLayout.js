@@ -38,9 +38,16 @@ import {
   buildGraph,
   findCycle,
   computeNodes,
-  normalizeLabel,
+  polarityOf,
   validateGraph,
 } from './electricalGraph.js';
+import { PROVENANCE } from './topologyReconciliation.js';
+import {
+  LABEL_CARD,
+  cardHalfAlong,
+  labelBoxAt,
+  labelSize,
+} from './labelMetrics.js';
 
 /* ------------------------------------------------------------------ *\
  * Constants
@@ -52,11 +59,27 @@ const MIN_SPAN = 84;      // shortest drawn component (symbol + visible leads)
 const MAX_SPAN = 200;     // longest drawn component
 const NODE_MIN_DIST = 170; // minimum distance between two node anchors
 const LEAD_GAP = 14;      // visible lead wire that must remain on each side
+const MIN_LEAD_LENGTH = 1;  // smallest visible gap between a body and its own terminal
+// A reported span smaller than this fraction of the symbol it describes is not
+// a length the image could have drawn: the terminals are the unreliable part, so
+// the documented minimum-length policy applies and the fallback is reported.
+const MIN_EVIDENCE_SCALE = 0.45;
+// How far a body may be compressed along its own axis and still read as a symbol.
+// Below this the body keeps its design length and overhangs its terminals instead
+// of turning into a mark too small to identify.
+const MIN_READABLE_SCALE = 0.85;
+// How far a component's own terminal direction may sit from the line between the
+// two extracted junctions it joins before that evidence is called contradictory.
+const GEOMETRY_CONTRADICTION_DEG = 35;
 const EPS = 0.75;
-const LABEL_W = 54;
-const LABEL_H = 30;
+/** Size reserved for a label card that carries only an id and a value. */
+const DEFAULT_LABEL_SIZE = { width: LABEL_CARD.width, height: LABEL_CARD.height };
 const EDGE_PAD = 8;        // clearance kept between a component and the canvas edge
-const ANCHOR_CLEARANCE = 16; // a rail anchor keeps this far from every terminal
+const ANCHOR_CLEARANCE = 16; // two node anchors keep this far apart
+const ANCHOR_MEMBER_CLEARANCE = 6; // a dot keeps this far from its own terminals
+// (a member's wire is drawn from its terminal to the dot, so only a near-zero
+// gap is a defect; keeping dots 16px off their members moved extracted dots
+// away from where the image put them)
 const ANCHOR_NUDGE = 34;   // step used when an anchor has to be moved off something
 const INCOMPLETE_MESSAGE = 'Reconstruction is incomplete — some terminals are not connected to anything in the image.';
 const APPROX_MESSAGE = 'Approximate layout — original image geometry was not available. The arrangement may not match the uploaded circuit.';
@@ -135,6 +158,17 @@ function dominantAxis(dx, dy) {
   return { x: 0, y: dy >= 0 ? 1 : -1 };
 }
 
+/**
+ * Unit vector along a delta, diagonals included. Used wherever the image itself
+ * reported the direction of a component: a bridge arm drawn at 45 degrees must
+ * stay at 45 degrees, so the axis is normalised, never snapped to a cardinal.
+ */
+function unitAxis(dx, dy) {
+  const len = Math.hypot(dx, dy);
+  if (!(len > 0)) return { x: 1, y: 0 };
+  return { x: dx / len, y: dy / len };
+}
+
 function symbolHalfOf(type) {
   return SYMBOL_HALF[type] ?? SYMBOL_HALF.unknown;
 }
@@ -167,52 +201,10 @@ function makeProjector(bounds) {
   return (p) => (p ? { x: PAD + p.x * w, y: PAD + p.y * h } : null);
 }
 
-/* ------------------------------------------------------------------ *\
- * Stage 0 — conservative connection recovery
- *
- * Gemini often reports traced wire paths but omits the matching connection.
- * Recovering a connection from a wire whose BOTH endpoints appear in no other
- * connection is evidence-based, not invention. Ambiguous/uncertain pairs are
- * left alone.
- * ------------------------------------------------------------------ */
-
-function analysisWithInferredConnections(analysis) {
-  const components = Array.isArray(analysis?.components) ? analysis.components : [];
-  const connections = Array.isArray(analysis?.connections) ? [...analysis.connections] : [];
-  const wires = Array.isArray(analysis?.wires) ? analysis.wires : [];
-  if (!wires.length) return { ...analysis, connections };
-
-  const ids = new Set(components.filter(Boolean).map((c) => c.id));
-  const covered = new Set();
-  for (const conn of connections) {
-    if (!conn) continue;
-    covered.add(terminalKey(conn.from_component, normalizeLabel(conn.from_terminal)));
-    covered.add(terminalKey(conn.to_component, normalizeLabel(conn.to_terminal)));
-  }
-
-  const inferred = [];
-  for (const w of wires) {
-    if (!w || !w.from_component || !w.to_component) continue;
-    if (!ids.has(w.from_component) || !ids.has(w.to_component)) continue;
-    const a = terminalKey(w.from_component, normalizeLabel(w.from_terminal));
-    const b = terminalKey(w.to_component, normalizeLabel(w.to_terminal));
-    if (a === b) continue;
-    if (covered.has(a) || covered.has(b)) continue;
-    if (Number(w.confidence ?? 1) < 0.5) continue;
-    inferred.push({
-      from_component: w.from_component,
-      from_terminal: w.from_terminal,
-      to_component: w.to_component,
-      to_terminal: w.to_terminal,
-      confidence: Math.min(Number(w.confidence ?? 0.6), 0.6),
-      notes: 'Inferred from a traced wire path — no explicit connection was reported.',
-    });
-    covered.add(a);
-    covered.add(b);
-  }
-
-  return { ...analysis, connections: inferred.length ? [...connections, ...inferred] : connections };
-}
+/* Wire-derived connection recovery used to live here. It now runs inside
+ * `reconcileTopology()` together with explicit and NodeGroup claims, so its
+ * output keeps a provenance and can be classified as confirmed or provisional.
+ */
 
 /* ------------------------------------------------------------------ *\
  * Stage 1 — node anchors
@@ -305,12 +297,18 @@ function pickFreePoint(from, taken, rect) {
   return { x: Math.round((rect.x0 + rect.x1) / 2), y: Math.round((rect.y0 + rect.y1) / 2) };
 }
 
-function separateAnchors(plan, bounds) {
+function separateAnchors(plan, bounds, keep = null) {
   const nodeCount = plan.size || 1;
   const minDist = Math.max(120, Math.min(240, (bounds.width - 2 * PAD) / Math.max(nodeCount, 3)));
   const placed = [];
   for (const info of plan.values()) {
     if (!info.point) continue;
+    // An anchor taken from the image is evidence, not a guess: it holds its
+    // position, while every guessed anchor still has to stay clear of it.
+    if (keep && keep(info)) {
+      placed.push(roundPoint(info.point));
+      continue;
+    }
     let p = roundPoint(info.point);
     let guard = 0;
     while (placed.some((q) => dist(q, p) < minDist) && guard < 12) {
@@ -323,6 +321,119 @@ function separateAnchors(plan, bounds) {
     info.point = roundPoint(p);
     placed.push(info.point);
   }
+}
+
+/** Node adjacency implied by the components that bridge two nodes. */
+function nodeNeighbours(comps) {
+  const neighbours = new Map();
+  for (const c of comps) {
+    const [t0, t1] = c.terminals;
+    if (!t0?.node || !t1?.node || t0.node === t1.node) continue;
+    if (!neighbours.has(t0.node)) neighbours.set(t0.node, new Set());
+    if (!neighbours.has(t1.node)) neighbours.set(t1.node, new Set());
+    neighbours.get(t0.node).add(t1.node);
+    neighbours.get(t1.node).add(t0.node);
+  }
+  return neighbours;
+}
+
+/**
+ * Give the nodes that have no geometry at all a position derived from their
+ * already-placed neighbours, instead of re-embedding the whole circuit. Nodes
+ * whose members carried coordinates keep them; only the unresolved ones move.
+ */
+function placeMissingNodes(plan, comps, bounds) {
+  const rect = { x0: PAD, y0: PAD, x1: bounds.width - PAD, y1: bounds.height - PAD };
+  const neighbours = nodeNeighbours(comps);
+  const taken = () => [...plan.values()].filter((p) => p.point).map((p) => p.point);
+
+  let remaining = [...plan.values()].filter((p) => !p.point);
+  for (let pass = 0; pass < 12 && remaining.length > 0; pass += 1) {
+    const before = remaining.length;
+    for (const info of remaining) {
+      const anchorNeighbour = [...(neighbours.get(info.id) || [])]
+        .map((id) => plan.get(id))
+        .find((n) => n && n.point);
+      if (!anchorNeighbour) continue;
+      info.point = pickFreePoint(anchorNeighbour.point, taken(), rect);
+      info.anchorSource = 'topological-neighbour';
+    }
+    remaining = remaining.filter((p) => !p.point);
+    if (remaining.length === before) break;
+  }
+
+  for (const info of remaining) {
+    info.point = pickFreePoint({ x: rect.x0, y: Math.round((rect.y0 + rect.y1) / 2) }, taken(), rect);
+    info.anchorSource = 'topological-neighbour';
+  }
+}
+
+/**
+ * Is `entry` the key of a real component terminal?
+ *
+ * A junction's member list is free text from the extractor. Entries naming a
+ * trace ("W1.to") say which wire arrives, and anything else that is not a
+ * component terminal on this drawing is not membership evidence either. When the
+ * caller supplies the terminal keys of the parsed circuit, only those count.
+ */
+function isTerminalKey(entry, terminalKeys) {
+  const text = String(entry ?? '');
+  if (!text || /\.(to|from)$/i.test(text)) return false;
+  if (terminalKeys) return terminalKeys.has(text);
+  return /^[^.]+\..+$/.test(text);
+}
+
+/**
+ * An extracted junction dot for `node`, when the dot's membership actually
+ * describes that node.
+ *
+ * The rule is about agreement, not about size: a dot may anchor a node when at
+ * least two of its valid component terminals belong to that node and every
+ * terminal it names belongs to it too. A dot that names only part of the node is
+ * still a real joint on that node's conductor — the image simply drew the joint
+ * before the third lead arrived — so it is evidence and its position is kept.
+ * Requiring three members, a complete rail description or an arriving trace
+ * would throw that evidence away.
+ *
+ * A dot that names terminals of more than one node is not evidence for either:
+ * the claim is contradictory, and the caller falls back to its own estimate.
+ */
+function junctionAnchorFor(junctions, node, project, terminalKeys = null) {
+  if (!Array.isArray(junctions) || junctions.length === 0) return null;
+  const members = new Set(node.members || []);
+  const candidates = [];
+  for (const junction of junctions) {
+    if (!junction || !junction.position) continue;
+    const named = Array.isArray(junction.members) ? junction.members : [];
+    const terminals = named.filter((m) => isTerminalKey(m, terminalKeys));
+    const listed = terminals.filter((m) => members.has(m));
+    // At least two real terminals of THIS node, and no terminal of another net.
+    if (listed.length < 2 || listed.length !== terminals.length) continue;
+    const point = project(junction.position);
+    if (!point) continue;
+    candidates.push({
+      point: roundPoint(point),
+      junctionId: junction.id ?? null,
+      namesWholeNode: listed.length === members.size,
+      arrivesWithTrace: named.length > terminals.length,
+      count: listed.length,
+    });
+  }
+  if (candidates.length === 0) return null;
+  // Strongest evidence first: a dot that names the whole node, then one a traced
+  // conductor arrives at, then the one naming more of the node's terminals. Ties
+  // keep extraction order, so the result is deterministic.
+  candidates.sort((a, b) => (
+    Number(b.namesWholeNode) - Number(a.namesWholeNode) ||
+    Number(b.arrivesWithTrace) - Number(a.arrivesWithTrace) ||
+    b.count - a.count
+  ));
+  const best = candidates[0];
+  // Two different dots claiming the same node in different places is a real
+  // ambiguity: the stronger one is used, and the caller reports the other
+  // instead of silently picking one.
+  const rival = candidates.find((c) => c !== best && dist(c.point, best.point) > 1);
+  return { ...best, ambiguousWith: rival ? rival.junctionId : null };
 }
 
 function placeNodesTopologically(plan, comps, bounds) {
@@ -342,15 +453,7 @@ function placeNodesTopologically(plan, comps, bounds) {
     });
   }
 
-  const neighbours = new Map();
-  for (const c of comps) {
-    const [t0, t1] = c.terminals;
-    if (!t0?.node || !t1?.node || t0.node === t1.node) continue;
-    if (!neighbours.has(t0.node)) neighbours.set(t0.node, new Set());
-    if (!neighbours.has(t1.node)) neighbours.set(t1.node, new Set());
-    neighbours.get(t0.node).add(t1.node);
-    neighbours.get(t1.node).add(t0.node);
-  }
+  const neighbours = nodeNeighbours(comps);
 
   if (placed.size === 0) {
     const first = [...plan.keys()][0];
@@ -375,38 +478,113 @@ function placeNodesTopologically(plan, comps, bounds) {
       placed.set(id, { x: Math.round((rect.x0 + rect.x1) / 2), y: Math.round((rect.y0 + rect.y1) / 2) });
     }
   }
-  for (const [id, point] of placed) plan.get(id).point = point;
+  for (const [id, point] of placed) {
+    plan.get(id).point = point;
+    plan.get(id).anchorSource = 'topological';
+  }
 }
 
-function planNodes(graph, comps, bounds, project, useGeometry) {
+function planNodes(graph, comps, bounds, project, hasAnyGeometry = true, junctions = [], notes = []) {
   const members = collectNodeMembers(comps, project);
   const plan = new Map();
+  // The real terminal keys of this circuit, so a junction's free-text members
+  // can be resolved instead of pattern-matched.
+  const terminalKeys = new Set();
+  for (const c of comps) {
+    for (const t of c.terminals || []) terminalKeys.add(terminalKey(c.id, t.label));
+  }
 
   for (const n of graph.nodes) {
     const list = members.get(n.id) || [];
     const pts = list.filter((m) => m.point).map((m) => m.point);
+    const extracted = junctionAnchorFor(junctions, n, project, terminalKeys);
+    if (extracted?.ambiguousWith) {
+      notes.push(
+        `Node ${n.id}: junctions ${extracted.junctionId} and ${extracted.ambiguousWith} both claim it ` +
+        `at different positions; kept ${extracted.junctionId} and flagged the disagreement.`,
+      );
+    }
     plan.set(n.id, {
       id: n.id,
       members: list,
       degree: list.length,
       isRail: list.length >= 3,
-      point: pts.length ? centroid(pts) : null,
+      point: extracted ? extracted.point : pts.length ? centroid(pts) : null,
+      anchorSource: extracted ? 'extracted-junction' : pts.length ? 'terminal-centroid' : null,
+      junctionId: extracted ? extracted.junctionId : null,
     });
   }
 
-  const missing = [...plan.values()].some((p) => !p.point);
-  if (!useGeometry || missing) {
-    for (const info of plan.values()) info.point = null;
-    placeNodesTopologically(plan, comps, bounds);
+  // Per-node fallback. A node is only placed topologically when it has no
+  // geometry of its own; a circuit that is entirely coordinate-free still gets
+  // the whole-circuit embedding, because there is nothing to preserve there.
+  const missing = [...plan.values()].filter((p) => !p.point);
+  if (missing.length > 0) {
+    if (!hasAnyGeometry) {
+      for (const info of plan.values()) {
+        info.point = null;
+        info.anchorSource = null;
+      }
+      placeNodesTopologically(plan, comps, bounds);
+    } else {
+      placeMissingNodes(plan, comps, bounds);
+    }
   }
 
-  separateAnchors(plan, bounds);
+  // Extracted anchors are never pushed around to satisfy spacing.
+  separateAnchors(plan, bounds, (info) => info.anchorSource === 'extracted-junction');
   return plan;
 }
 
 /* ------------------------------------------------------------------ *\
  * Stage 2 — component symbols
  * ------------------------------------------------------------------ */
+
+/**
+ * Does the image's own evidence disagree with itself about this component?
+ *
+ * Two independent measurements describe the same body: the terminal pair the
+ * extractor reported, and the line joining the two junction dots the image drew
+ * at the nodes those terminals belong to. Both are evidence. When they differ by
+ * more than GEOMETRY_CONTRADICTION_DEG the capture is internally inconsistent and
+ * nothing in it says which measurement is wrong, so the terminals are kept
+ * exactly as extracted and the component is reported as geometrically uncertain.
+ * The node direction is never used to rotate anything.
+ *
+ * Only image-drawn dots count: a centroid is a layout guess, and comparing
+ * evidence against a guess proves nothing. The angle is measured on normalized
+ * coordinates, so canvas scale and aspect cannot change the verdict.
+ */
+function geometryContradiction(comp, plan, bounds) {
+  const a = comp.terminals?.[0];
+  const b = comp.terminals?.[1];
+  if (!a || !b || !a.node || !b.node || a.node === b.node) return null;
+  const na = plan.get(a.node);
+  const nb = plan.get(b.node);
+  if (!na || !nb || !na.point || !nb.point) return null;
+  if (na.anchorSource !== 'extracted-junction' || nb.anchorSource !== 'extracted-junction') return null;
+  const width = Math.max(bounds.width - 2 * PAD, 1);
+  const height = Math.max(bounds.height - 2 * PAD, 1);
+  const norm = (p) => ({ x: (p.x - PAD) / width, y: (p.y - PAD) / height });
+  const ta = norm(a);
+  const tb = norm(b);
+  const ja = norm(na.point);
+  const jb = norm(nb.point);
+  const termAngle = Math.atan2(tb.y - ta.y, tb.x - ta.x);
+  const nodeAngle = Math.atan2(jb.y - ja.y, jb.x - ja.x);
+  if (!Number.isFinite(termAngle) || !Number.isFinite(nodeAngle)) return null;
+  let delta = (Math.abs(termAngle - nodeAngle) * 180) / Math.PI % 180;
+  // A body has no direction of its own: ±180° describe the same line.
+  if (delta > 90) delta = 180 - delta;
+  if (!(delta > GEOMETRY_CONTRADICTION_DEG)) return null;
+  return {
+    delta,
+    message:
+      `its terminal direction is ${Math.round(delta)}° away from the line between the junctions ` +
+      `it joins (${a.node} and ${b.node}), so the image's own geometry disagrees with itself; ` +
+      `the extracted terminals are kept and the component is marked uncertain.`,
+  };
+}
 
 /** Box occupied by the symbol body only. */
 function componentBox(comp) {
@@ -429,8 +607,11 @@ function componentBox(comp) {
  */
 function componentDrawBox(comp) {
   const perp = Math.max(comp.symbolPerp, 6);
-  const halfX = Math.abs(comp.axis.x) * comp.halfSpan + Math.abs(comp.axis.y) * perp;
-  const halfY = Math.abs(comp.axis.y) * comp.halfSpan + Math.abs(comp.axis.x) * perp;
+  // The box must cover the body as well as the terminals: a body that overhangs
+  // its terminals still occupies that room, and a dot must not land inside it.
+  const along = Math.max(comp.halfSpan, comp.symbolHalf ?? 0);
+  const halfX = Math.abs(comp.axis.x) * along + Math.abs(comp.axis.y) * perp;
+  const halfY = Math.abs(comp.axis.y) * along + Math.abs(comp.axis.x) * perp;
   return {
     minX: comp.center.x - halfX,
     maxX: comp.center.x + halfX,
@@ -465,13 +646,8 @@ function boxesOverlap(a, b, margin = 0) {
   );
 }
 
-function labelBox(p) {
-  return {
-    minX: p.x - LABEL_W / 2,
-    maxX: p.x + LABEL_W / 2,
-    minY: p.y - LABEL_H / 2,
-    maxY: p.y + LABEL_H / 2,
-  };
+function labelBox(p, size = DEFAULT_LABEL_SIZE) {
+  return labelBoxAt(p, size);
 }
 
 /** Shortest distance from a point to an axis-aligned box (0 when inside). */
@@ -482,9 +658,11 @@ function pointBoxDistance(p, box) {
   return Math.hypot(dx, dy);
 }
 
-/** Half of the label card measured along a screen direction. */
-function cardHalfAlong(dir) {
-  return dir.x !== 0 ? LABEL_W / 2 : LABEL_H / 2;
+/** The size of one component's card, always from the shared metrics. */
+function sizeOf(comp) {
+  const size = labelSize(comp);
+  comp.labelSize = size;
+  return size;
 }
 
 /**
@@ -504,12 +682,17 @@ function placeLabel(comp, takenLabels, allBoxes, bounds, wireSegments = []) {
   const axis = comp.axis;
   const perp = { x: -axis.y, y: axis.x };
 
-  const besideSymbol = (dir, gap) => {
-    const d = comp.symbolPerp + cardHalfAlong(dir) + gap;
-    return { x: comp.center.x + dir.x * d, y: comp.center.y + dir.y * d };
+  const size = sizeOf(comp);
+
+  const besideSymbol = (dir, gap, shift = 0) => {
+    const d = comp.symbolPerp + cardHalfAlong(dir, size) + gap;
+    return {
+      x: comp.center.x + dir.x * d + axis.x * shift,
+      y: comp.center.y + dir.y * d + axis.y * shift,
+    };
   };
   const beyondTerminal = (dir) => {
-    const d = comp.halfSpan + cardHalfAlong(dir) + LABEL_GAP;
+    const d = comp.halfSpan + cardHalfAlong(dir, size) + LABEL_GAP;
     return { x: comp.center.x + dir.x * d, y: comp.center.y + dir.y * d };
   };
 
@@ -520,29 +703,40 @@ function placeLabel(comp, takenLabels, allBoxes, bounds, wireSegments = []) {
   // card clears a rail or lead that blocks a purely perpendicular position.
   const corner = (alongDir, sideDir) => {
     const along = Math.min(comp.halfSpan * 0.35, comp.symbolHalf + 18);
-    const across = comp.symbolPerp + cardHalfAlong(sideDir) + LABEL_GAP;
+    const across = comp.symbolPerp + cardHalfAlong(sideDir, size) + LABEL_GAP;
     return {
       x: comp.center.x + alongDir.x * along + sideDir.x * across,
       y: comp.center.y + alongDir.y * along + sideDir.y * across,
     };
   };
 
-  const candidates = [
-    // 1. straight beside the symbol (most conventional)
-    { point: besideSymbol(perp, LABEL_GAP), rank: 0, dir: perp },
-    { point: besideSymbol(negPerp, LABEL_GAP), rank: 0, dir: negPerp },
-    // 2. same side, one step further out
-    { point: besideSymbol(perp, LABEL_GAP + 22), rank: 0, dir: perp },
-    { point: besideSymbol(negPerp, LABEL_GAP + 22), rank: 0, dir: negPerp },
-    // 3. off-axis corners
-    { point: corner(negAxis, perp), rank: 0, dir: perp },
-    { point: corner(axis, perp), rank: 0, dir: perp },
-    { point: corner(negAxis, negPerp), rank: 0, dir: negPerp },
-    { point: corner(axis, negPerp), rank: 0, dir: negPerp },
-    // 4. beyond a terminal, only when every adjacent spot is busy
-    { point: beyondTerminal(negAxis), rank: 1, dir: negAxis },
-    { point: beyondTerminal(axis), rank: 1, dir: axis },
-  ];
+  // The card may slide ALONG its own component to find a clear spot. In a dense
+  // circuit the space directly beside a short body is often taken by a
+  // neighbour, and sliding (rather than jumping to the far side of the canvas)
+  // is what keeps a card unmistakably attached to the part it names. Shifts are
+  // fractions of the body, so nothing here is tuned to a particular layout.
+  const shifts = [0, 1, -1, 2, -2].map((step) => step * (comp.symbolHalf + cardHalfAlong(axis, size) * 0.75));
+
+  const candidates = [];
+  // 1. beside the symbol — conventional spot, nearest first, sliding outwards
+  for (const gap of [LABEL_GAP, LABEL_GAP + 22]) {
+    for (const shift of shifts) {
+      candidates.push({ point: besideSymbol(perp, gap, shift), rank: gap === LABEL_GAP ? 0 : 1, dir: perp });
+      candidates.push({ point: besideSymbol(negPerp, gap, shift), rank: gap === LABEL_GAP ? 0 : 1, dir: negPerp });
+    }
+  }
+  // 2. off-axis corners
+  candidates.push(
+    { point: corner(negAxis, perp), rank: 1, dir: perp },
+    { point: corner(axis, perp), rank: 1, dir: perp },
+    { point: corner(negAxis, negPerp), rank: 1, dir: negPerp },
+    { point: corner(axis, negPerp), rank: 1, dir: negPerp },
+  );
+  // 3. beyond a terminal, only when every adjacent spot is busy
+  candidates.push(
+    { point: beyondTerminal(negAxis), rank: 2, dir: negAxis },
+    { point: beyondTerminal(axis), rank: 2, dir: axis },
+  );
 
   // Convention: labels above horizontal parts and to the right of vertical
   // ones. This is only a tie-breaker, so a real collision still wins.
@@ -555,19 +749,22 @@ function placeLabel(comp, takenLabels, allBoxes, bounds, wireSegments = []) {
     // Score the position the card will actually occupy: clamping happens first,
     // otherwise a clipped candidate can be scored as if it were still outside.
     const p = {
-      x: clamp(raw.x, LABEL_W / 2 + 6, bounds.width - LABEL_W / 2 - 6),
-      y: clamp(raw.y, LABEL_H / 2 + 6, bounds.height - LABEL_H / 2 - 6),
+      x: clamp(raw.x, size.width / 2 + LABEL_CARD.edgeGap, bounds.width - size.width / 2 - LABEL_CARD.edgeGap),
+      y: clamp(raw.y, size.height / 2 + LABEL_CARD.edgeGap, bounds.height - size.height / 2 - LABEL_CARD.edgeGap),
     };
-    const box = labelBox(p);
+    const box = labelBox(p, size);
     let score = cand.rank * 120;
     if (cand.dir.x === preferred.x && cand.dir.y === preferred.y) score -= 40;
 
+    // Covering another symbol or another card is disqualifying: a value card
+    // printed on a neighbour's body is read as that neighbour's value. A clear
+    // spot anywhere in the candidate set therefore always beats a collision.
     for (const other of allBoxes) {
       if (other.compId === comp.id) continue;
-      if (boxesOverlap(box, other)) score += 500;
+      if (boxesOverlap(box, other, 2)) score += 100000;
     }
     for (const other of takenLabels) {
-      if (boxesOverlap(box, other)) score += 700;
+      if (boxesOverlap(box, other)) score += 220000;
     }
     // A label card is opaque: if it sits on a wire the wire looks broken.
     for (const seg of wireSegments) {
@@ -582,7 +779,7 @@ function placeLabel(comp, takenLabels, allBoxes, bounds, wireSegments = []) {
       if (other.compId === comp.id) continue;
       nearestOther = Math.min(nearestOther, pointBoxDistance(p, other));
     }
-    if (nearestOther < ownGap + 6) score += 400;
+    if (nearestOther < ownGap + 6) score += 4000;
     score += ownGap * 8;
 
     if (score < bestScore) {
@@ -591,11 +788,11 @@ function placeLabel(comp, takenLabels, allBoxes, bounds, wireSegments = []) {
     }
   }
 
-  takenLabels.push(labelBox(best));
+  takenLabels.push(labelBox(best, size));
   return best;
 }
 
-function planComponents(graph, comps, plan, useGeometry, project, bounds) {
+function planComponents(graph, comps, plan, project, bounds) {
   const groups = new Map();
   for (const c of comps) {
     const [t0, t1] = c.terminals;
@@ -619,23 +816,35 @@ function planComponents(graph, comps, plan, useGeometry, project, bounds) {
       const p1 = t1?.position ? project(t1.position) : null;
       const imageCentre = c.center ? project(c.center) : null;
 
+      // Geometry is decided per component, never for the circuit as a whole: a
+      // neighbour without coordinates must not drag a placed component away
+      // from where the image put it.
+      const placedFromImage = Boolean(
+        (p0 && p1 && dist(p0, p1) > 6) || (c.orientation != null && imageCentre) || (imageCentre && (pa || pb)),
+      );
+
       let axis;
       let centre;
       let span;
+      // Did the image report this length, or is it derived from node anchors?
+      const spanFromImage = Boolean(p0 && p1 && dist(p0, p1) > 6);
 
-      if (useGeometry && p0 && p1 && dist(p0, p1) > 6) {
-        // Faithful placement: keep the image's own axis, centre and length.
-        axis = dominantAxis(p1.x - p0.x, p1.y - p0.y);
-        centre = imageCentre ?? mid(p0, p1);
+      if (p0 && p1 && dist(p0, p1) > 6) {
+        // Faithful placement: keep the image's own axis, centre and length. The
+        // axis is the direction the two terminals actually lie on, so a
+        // diagonal arm stays diagonal; the centre is the midpoint of the two
+        // terminals, because that is the body the terminals belong to.
+        axis = unitAxis(p1.x - p0.x, p1.y - p0.y);
+        centre = mid(p0, p1);
         span = dist(p0, p1);
-      } else if (useGeometry && c.orientation != null && imageCentre) {
+      } else if (c.orientation != null && imageCentre) {
         // Only the rotation was reported: honour it instead of guessing an axis
         // from estimated node positions.
         const rad = (c.orientation * Math.PI) / 180;
-        axis = dominantAxis(Math.cos(rad), Math.sin(rad));
+        axis = unitAxis(Math.cos(rad), Math.sin(rad));
         centre = imageCentre;
         span = pa && pb ? dist(pa, pb) : MIN_SPAN;
-      } else if (useGeometry && imageCentre && (pa || pb)) {
+      } else if (imageCentre && (pa || pb)) {
         const ref = pa ?? pb;
         axis = dominantAxis(imageCentre.x - ref.x, imageCentre.y - ref.y);
         centre = imageCentre;
@@ -649,34 +858,74 @@ function planComponents(graph, comps, plan, useGeometry, project, bounds) {
       }
 
       // Orient the axis so terminal 0 is always on the -axis side.
-      if (useGeometry && p0 && p1) {
-  if (axis.x * (p1.x - p0.x) + axis.y * (p1.y - p0.y) < 0) {
-    axis = { x: -axis.x, y: -axis.y };
-  }
-} else if (pa && pb) {
-  if (axis.x * (pb.x - pa.x) + axis.y * (pb.y - pa.y) < 0) {
-    axis = { x: -axis.x, y: -axis.y };
-  }
-} else if (p0 && p1) {
-  if (axis.x * (p1.x - p0.x) + axis.y * (p1.y - p0.y) < 0) {
-    axis = { x: -axis.x, y: -axis.y };
-  }
-}
+      if (p0 && p1) {
+        if (axis.x * (p1.x - p0.x) + axis.y * (p1.y - p0.y) < 0) {
+          axis = { x: -axis.x, y: -axis.y };
+        }
+      } else if (pa && pb) {
+        if (axis.x * (pb.x - pa.x) + axis.y * (pb.y - pa.y) < 0) {
+          axis = { x: -axis.x, y: -axis.y };
+        }
+      }
 
-      const symbolHalf = symbolHalfOf(c.type);
-      const symbolPerp = symbolPerpOf(c.type);
+      // Two independent facts meet here: where the terminals are (evidence taken
+      // from the image) and how large the body drawn between them is
+      // (presentation). Only the body may adapt — a reported terminal is never
+      // moved to make room for a symbol.
+      const baseHalf = symbolHalfOf(c.type);
+      const basePerp = symbolPerpOf(c.type);
 
-      // In topology mode the span is derived from the node anchors, so keep a
-      // visible lead on BOTH sides: a component must never end exactly on a node
-      // anchor, because that hides the connection and collapses its wire to zero
-      // length (the old layout did exactly this).
-      if (!useGeometry && pa && pb) {
+      // When the span is derived from the node anchors, keep a visible lead on
+      // BOTH sides: a component must never end exactly on a node anchor, because
+      // that hides the connection and collapses its wire to zero length.
+      if (!placedFromImage && pa && pb) {
         span = Math.min(span, dist(pa, pb) - 2 * LEAD_GAP);
       }
-      span = clamp(span, Math.max(2 * symbolHalf + 24, MIN_SPAN), MAX_SPAN);
 
-      // Parallel branches between the same two nodes get their own lane.
-      if (!useGeometry && group.length > 1) {
+      // Can the image's own span hold this type's body with any visible lead at
+      // all? If not, the reported LENGTH is the unreliable part (terminals a few
+      // pixels apart cannot be the body the image drew), so the documented
+      // minimum-length policy applies instead — and the fallback is reported,
+      // never silent.
+      const legibleSpan = 2 * baseHalf * MIN_EVIDENCE_SCALE + 2 * MIN_LEAD_LENGTH;
+      const spanIsEvidence = spanFromImage && span >= legibleSpan;
+      const lengthIsApproximate = spanFromImage && !spanIsEvidence;
+
+      // A component the image placed may be as long as the canvas allows along
+      // its own axis: clamping it would drag its terminals away from the
+      // junctions they meet. A guessed length stays bounded by MAX_SPAN.
+      const maxSpan = spanIsEvidence
+        ? Math.max(
+          MAX_SPAN,
+          Math.abs(axis.x) * (bounds.width - 2 * PAD) + Math.abs(axis.y) * (bounds.height - 2 * PAD),
+        )
+        : MAX_SPAN;
+      span = spanIsEvidence
+        ? Math.max(span, 2 * MIN_LEAD_LENGTH)
+        : clamp(span, Math.max(2 * baseHalf + 24, MIN_SPAN), maxSpan);
+
+      // Body size. The body's PERPENDICULAR extent is what makes a symbol
+      // identifiable (a zigzag's teeth, a source's plates), so it never shrinks:
+      // shrinking it was what turned a short reported span into an unreadable
+      // mark. Only the length between the body's ends follows the reported span,
+      // and only down to a readable floor — past that the body keeps its legs and
+      // overhangs its own terminals, which the leads then have to cross.
+      let symbolHalf = baseHalf;
+      let symbolScale = 1;
+      if (spanIsEvidence) {
+        const halfSpanHere = span / 2;
+        const readableHalf = Math.min(baseHalf * MIN_READABLE_SCALE, baseHalf);
+        symbolHalf = clamp(halfSpanHere, readableHalf, baseHalf);
+        symbolScale = symbolHalf / baseHalf;
+      }
+      const symbolPerp = basePerp;
+      // A body longer than the gap between its terminals cannot be joined by a
+      // lead on each side: the terminals sit inside it. Reported, never hidden.
+      const bodyOverhangs = symbolHalf > span / 2 + 0.5;
+
+      // Parallel branches between the same two nodes get their own lane, but
+      // only when their positions are guesses rather than image coordinates.
+      if (!placedFromImage && group.length > 1) {
         const offset = (index - (group.length - 1) / 2) * LANE_GAP;
         centre = { x: centre.x + -axis.y * offset, y: centre.y + axis.x * offset };
       }
@@ -693,14 +942,22 @@ function planComponents(graph, comps, plan, useGeometry, project, bounds) {
       const t0Point = roundPoint({ x: centre.x - axis.x * halfSpan, y: centre.y - axis.y * halfSpan });
       const t1Point = roundPoint({ x: centre.x + axis.x * halfSpan, y: centre.y + axis.y * halfSpan });
 
-      let posTerminal = null;
-      if (t0.label === '+') posTerminal = 'A';
-      else if (t1.label === '+') posTerminal = 'B';
+      // Polarity is the graph's answer, not a re-guess from the raw label: a
+      // source whose terminals are named "positive"/"negative" (or "+ −" in
+      // any spelling the extractor used) keeps the same side marked + through
+      // layout, editing and rendering.
+      let posTerminal = c.posTerminal ?? null;
+      if (!posTerminal && polarityOf(t0?.label) === '+') posTerminal = 'A';
+      if (!posTerminal && polarityOf(t1?.label) === '+') posTerminal = 'B';
 
       const comp = {
         id: c.id,
         type: c.type,
         value: c.value ?? null,
+        // What the image actually printed, and whether its unit could be read.
+        // Carried through so every renderer of a value can flag it.
+        valueRaw: c.valueRaw ?? null,
+        valueUnitRecognized: c.valueUnitRecognized ?? true,
         confidence: c.confidence ?? 1,
         status: c.status ?? (c.confidence >= 0.85 ? 'confirmed' : c.confidence >= 0.6 ? 'probable' : 'uncertain'),
         notes: c.notes ?? null,
@@ -712,6 +969,17 @@ function planComponents(graph, comps, plan, useGeometry, project, bounds) {
         halfSpan,
         symbolHalf,
         symbolPerp,
+        // Along-axis compression of the drawn glyph (1 = this type's design
+        // length). The renderer applies it to the axis only, never to the
+        // symbol's height, so a short span cannot flatten the symbol.
+        symbolScale,
+        // True when the body is longer than the reported terminals' gap.
+        bodyOverhang: bodyOverhangs,
+        // Where this component's drawn length came from: the image itself, a
+        // length the image reported but that is too short to draw, or the node
+        // anchors. Only the middle case is an approximation of the image.
+        lengthSource: spanIsEvidence ? 'extracted' : spanFromImage ? 'short-extracted' : 'inferred',
+        lengthApproximate: lengthIsApproximate,
         posTerminal,
         nodeA: na,
         nodeB: nb,
@@ -720,12 +988,20 @@ function planComponents(graph, comps, plan, useGeometry, project, bounds) {
         x2: t1Point.x,
         y2: t1Point.y,
         terminals: [
-          { label: t0.label, x: t0Point.x, y: t0Point.y, node: na, polarity: t0.label === '+' ? '+' : t0.label === '−' ? '-' : null },
-          { label: t1.label, x: t1Point.x, y: t1Point.y, node: nb, polarity: t1.label === '+' ? '+' : t1.label === '−' ? '-' : null },
+          { label: t0.label, x: t0Point.x, y: t0Point.y, node: na, polarity: polarityOf(t0.label) },
+          { label: t1.label, x: t1Point.x, y: t1Point.y, node: nb, polarity: polarityOf(t1.label) },
         ],
       };
       comp.symbolBox = componentBox(comp);
       comp.drawBox = componentDrawBox(comp);
+      // Geometry that disagrees with itself is reported, never "fixed" by
+      // rotating or shifting the component.
+      const contradiction = geometryContradiction(comp, plan, bounds);
+      comp.geometryUncertain = Boolean(contradiction);
+      if (contradiction) comp.geometryNote = contradiction.message;
+      // Remember the provenance of this position: image coordinates stay put
+      // during collision resolution, estimates yield to them.
+      comp.placedFromImage = placedFromImage;
       placed.push(comp);
     });
   }
@@ -754,7 +1030,8 @@ function repositionLabels(placed, wires, bounds) {
   const boxes = placed.map((c) => ({ ...c.symbolBox, compId: c.id }));
   for (const comp of placed) {
     comp.labelPosition = placeLabel(comp, takenLabels, boxes, bounds, wireSegments);
-    comp.labelBox = labelBox(comp.labelPosition);
+    // Exactly the size the renderer will draw, from the same helper.
+    comp.labelBox = labelBox(comp.labelPosition, sizeOf(comp));
   }
 }
 
@@ -809,6 +1086,13 @@ function resolveCollisions(placed, bounds) {
         const b = placed[j];
         if (!boxesOverlap(a.drawBox, b.drawBox, 8)) continue;
 
+        // A component that the image itself placed is evidence: it is only
+        // displaced when the overlap cannot be resolved by moving the other
+        // one. Two image-placed components are left where the image put them.
+        const movableA = a.placedFromImage !== true;
+        const movableB = b.placedFromImage !== true;
+        if (!movableA && !movableB) continue;
+
         const perp = { x: -b.axis.y, y: b.axis.x };
         const away = perp.x * (b.center.x - a.center.x) + perp.y * (b.center.y - a.center.y) >= 0 ? 1 : -1;
         const overlapAlong =
@@ -817,19 +1101,58 @@ function resolveCollisions(placed, bounds) {
           Math.min(a.drawBox.maxY, b.drawBox.maxY) - Math.max(a.drawBox.minY, b.drawBox.minY);
         const need = (b.axis.y === 0 ? overlapPerp : overlapAlong) + 18;
 
-        // Move both components symmetrically to reduce drift toward canvas
-        // edges. Each moves half the overlap along b's perpendicular, in
-        // opposite directions, preserving each component's own orientation.
-        const push = need * 0.5;
-        b.center = { x: b.center.x + perp.x * push * away, y: b.center.y + perp.y * push * away };
-        a.center = { x: a.center.x - perp.x * push * away, y: a.center.y - perp.y * push * away };
-        refreshComponentGeometry(a, bounds);
-        refreshComponentGeometry(b, bounds);
+        // Move both components symmetrically when both are estimates, so drift
+        // toward the canvas edges stays small; otherwise move only the estimate.
+        const push = movableA && movableB ? need * 0.5 : need;
+        if (movableB) {
+          b.center = { x: b.center.x + perp.x * push * away, y: b.center.y + perp.y * push * away };
+          refreshComponentGeometry(b, bounds);
+        }
+        if (movableA) {
+          a.center = { x: a.center.x - perp.x * push * away, y: a.center.y - perp.y * push * away };
+          refreshComponentGeometry(a, bounds);
+        }
         moved = true;
       }
     }
     if (!moved) break;
   }
+}
+
+/**
+ * Two components reported at the same place.
+ *
+ * A schematic cannot show two symbols in one spot, and neither measurement is
+ * more trustworthy than the other: the capture says both components live at that
+ * point. Nothing here invents a position for either — terminals are evidence and
+ * stay where the image put them — so the contradiction is reported instead of
+ * being smoothed into a drawing that looks plausible and is wrong.
+ */
+const COINCIDENT_COMPONENT_PX = 3;
+
+function reportCoincidentComponents(placed, notes) {
+  const found = [];
+  for (let i = 0; i < placed.length; i += 1) {
+    for (let j = i + 1; j < placed.length; j += 1) {
+      const a = placed[i];
+      const b = placed[j];
+      if (!a.center || !b.center) continue;
+      if (dist(a.center, b.center) > COINCIDENT_COMPONENT_PX) continue;
+      const where = `(${Math.round(a.center.x)},${Math.round(a.center.y)})`;
+      notes.push(
+        `Components ${a.id} and ${b.id}: the image reports both at the same position ${where}, ` +
+        `which no schematic can show. Both are drawn where the evidence put them, so the overlap ` +
+        `is an extraction contradiction rather than a layout choice.`,
+      );
+      found.push({
+        code: 'coincident-components',
+        severity: 'error',
+        message: `The extraction reports ${a.id} and ${b.id} at the same position ${where}.`,
+        componentIds: [a.id, b.id],
+      });
+    }
+  }
+  return found;
 }
 
 /**
@@ -848,6 +1171,9 @@ function refreshAnchors(plan, placed) {
   }
   for (const info of plan.values()) {
     if (!info.isRail) continue;
+    // An extracted junction position is what the image shows; recomputing a
+    // centroid after collision resolution would overwrite that evidence.
+    if (info.anchorSource === 'extracted-junction') continue;
     const pts = info.members
       .map((m) => termPos.get(m.key))
       .filter(Boolean);
@@ -869,14 +1195,28 @@ function refreshAnchors(plan, placed) {
  * ------------------------------------------------------------------ */
 
 /**
- * Is `point` a usable rail anchor? It must stay inside the canvas, outside
- * every component's drawing box, clear of unrelated terminals, and far enough
- * from the node's own terminals that no member wire collapses to nothing.
+ * Every reason `point` is unusable as a rail anchor, as a list of conflicts.
+ *
+ * A rail anchor must stay inside the canvas, outside every component's drawing
+ * box, clear of unrelated terminals, and far enough from the node's own
+ * terminals that no member wire collapses to nothing.
+ *
+ * This returns the reasons instead of a boolean so a position the user chose
+ * can be kept and reported rather than silently corrected.
  */
-function anchorPointIsClear(point, { members, comps, bounds, avoidSegments = [], taken = [] }) {
-  if (!bounds) return true;
-  if (point.x < EDGE_PAD || point.y < EDGE_PAD) return false;
-  if (point.x > bounds.width - EDGE_PAD || point.y > bounds.height - EDGE_PAD) return false;
+function anchorConflictsAt(point, { members, comps, bounds, avoidSegments = [], taken = [] }) {
+  if (!bounds) return [];
+  const conflicts = [];
+  const add = (code, message) => {
+    if (!conflicts.some((c) => c.code === code)) conflicts.push({ code, message });
+  };
+
+  if (point.x < EDGE_PAD || point.y < EDGE_PAD) {
+    add('outside-canvas', 'it is too close to the edge of the canvas');
+  }
+  if (point.x > bounds.width - EDGE_PAD || point.y > bounds.height - EDGE_PAD) {
+    add('outside-canvas', 'it is too close to the edge of the canvas');
+  }
 
   const memberKeys = new Set(members.map((m) => keyOf(m)));
   for (const comp of comps) {
@@ -886,22 +1226,42 @@ function anchorPointIsClear(point, { members, comps, bounds, avoidSegments = [],
       point.x > box.minX - 2 && point.x < box.maxX + 2 &&
       point.y > box.minY - 2 && point.y < box.maxY + 2
     ) {
-      return false;
+      add('inside-symbol', 'it falls inside a component symbol');
+      break;
     }
     for (const t of comp.terminals || []) {
       const isMember = memberKeys.has(terminalKey(comp.id, t.label));
-      const limit = isMember ? ANCHOR_CLEARANCE : 2;
-      if (dist(point, { x: t.x, y: t.y }) < limit) return false;
+      const limit = isMember ? ANCHOR_MEMBER_CLEARANCE : 2;
+      if (dist(point, { x: t.x, y: t.y }) < limit) {
+        add(
+          isMember ? 'touching-member-terminal' : 'on-foreign-terminal',
+          isMember
+            ? 'it is too close to one of its own terminals, so that wire is drawn collapsed'
+            : "it sits on another net's terminal",
+        );
+        break;
+      }
     }
   }
 
   for (const [a, b] of avoidSegments) {
-    if (pointSegmentDistance(point, a, b) <= 4) return false;
+    if (pointSegmentDistance(point, a, b) <= 4) {
+      add('on-foreign-wire', "it sits on another net's conductor");
+      break;
+    }
   }
   for (const other of taken) {
-    if (dist(point, other) < ANCHOR_CLEARANCE) return false;
+    if (dist(point, other) < ANCHOR_CLEARANCE) {
+      add('on-locked-anchor', 'it overlaps another node you positioned');
+      break;
+    }
   }
-  return true;
+  return conflicts;
+}
+
+/** Is `point` a usable rail anchor? */
+function anchorPointIsClear(point, context) {
+  return anchorConflictsAt(point, context).length === 0;
 }
 
 /**
@@ -943,42 +1303,68 @@ function nudgeAnchor(point, context) {
  * terminal, on another net's conductor, or closer than the dot clearance to an
  * already-settled anchor) — and only by the smallest ring that clears it.
  *
- * Anchors the user dragged (junctions) keep their position: they are never
- * separated from other anchors. They are still nudged if that position would
- * draw a false junction (on a symbol, on a foreign terminal or on another
- * net's wire) or would collapse one of their own member wires.
+ * Anchors the user dragged (junctions) are authoritative and are never moved:
+ * not separated from other anchors, not nudged off a symbol or a terminal, and
+ * not re-routed around a conflict. Every clearance problem a locked anchor has
+ * is returned to the caller, and the position is kept exactly as dropped, so
+ * correcting it stays the user's decision. Only passive (auto-derived) anchors
+ * are nudged.
  *
  * Priority rule: locked (user-dragged) anchors are settled FIRST, without
  * checking clearance against passive anchors. Passive anchors are settled
- * SECOND and must yield to the already-committed locked positions. This
- * ensures the editor never silently overrides the user's intended drop point.
+ * SECOND and must yield to the already-committed locked positions. This is
+ * what makes refinement operate *around* a user's drop point instead of
+ * against it.
  *
  * When multiple junctions are locked simultaneously (the user has dragged
  * more than one on separate gestures — nodeEdits accumulates across drags),
- * each locked anchor is checked against the positions already committed by
- * earlier locked anchors in plan order. The first locked anchor retains its
- * requested position; subsequent ones are nudged only if they would otherwise
- * overlap an already-settled locked anchor. No passive anchor is ever in
+ * every locked anchor keeps its own requested position; one that overlaps an
+ * earlier locked anchor is reported, never moved. No passive anchor is ever in
  * `taken` during Pass 1, so passives can never displace a locked anchor.
+ *
+ * @returns {Array<{nodeId: string, code: string, point: {x,y}, message: string}>}
+ *   the conflicts that were kept rather than resolved
  */
-function refineAnchors(plan, comps, bounds, locked) {
+function refineAnchors(plan, comps, bounds, locked, preserved = null) {
   const all = [...plan.values()].filter((info) => info.point);
+  const conflicts = [];
 
-  // --- Pass 1: settle locked (user-dragged) rail anchors first. ---
+  // --- Pass 1: commit locked (user-dragged) rail anchors verbatim. ---
+  // A locked position is never passed through nudgeAnchor: the user's drop
+  // point is the input to refinement, not a candidate refinement may improve.
   // Each locked anchor is checked against previously-committed locked
-  // positions only — never against passive anchors. Plan-iteration order
-  // (stable Map insertion order) makes the settlement deterministic: the
-  // first locked anchor in plan order wins its exact requested position;
-  // a later locked anchor that conflicts is nudged by the smallest ring.
+  // positions only — never against passive anchors — and anything it would
+  // draw wrongly is returned as a conflict, so the drawing can report it
+  // without undoing the drag. Plan-iteration order (stable Map insertion
+  // order) keeps the result deterministic.
   const lockedPositions = [];
   for (const info of all) {
-    if (!info.isRail || !locked?.has(info.id)) continue;
-    info.point = nudgeAnchor(info.point, {
+    if (!info.isRail) continue;
+    // A junction dot extracted from the image is committed verbatim: it is not
+    // a guess, so nothing about a reroute should talk it out of its position.
+    // It is still settled before passive anchors, which must yield to it.
+    if (preserved?.has(info.id)) {
+      info.point = roundPoint(info.point);
+      lockedPositions.push(info.point);
+      continue;
+    }
+    if (!locked?.has(info.id)) continue;
+    info.point = roundPoint(info.point);
+    for (const conflict of anchorConflictsAt(info.point, {
       members: info.members,
       comps,
       bounds,
       taken: [...lockedPositions], // yield to earlier locked anchors only
-    });
+    })) {
+      conflicts.push({
+        nodeId: info.id,
+        code: conflict.code,
+        point: { ...info.point },
+        message:
+          `Node ${info.id} was kept at (${info.point.x}, ${info.point.y}) where you placed it, ` +
+          `although ${conflict.message}.`,
+      });
+    }
     lockedPositions.push(info.point);
   }
 
@@ -989,7 +1375,8 @@ function refineAnchors(plan, comps, bounds, locked) {
   // Non-rail passive anchors are not nudged but still register in `taken`.
   // Process in stable plan order so the result stays deterministic.
   for (const info of all) {
-    if (locked?.has(info.id)) continue; // already settled above
+    // Already settled in Pass 1 (user-placed or extracted from the image).
+    if (locked?.has(info.id) || preserved?.has(info.id)) continue;
     if (!info.isRail) {
       taken.push(info.point);
       continue;
@@ -1002,15 +1389,17 @@ function refineAnchors(plan, comps, bounds, locked) {
     });
     taken.push(info.point);
   }
+
+  return conflicts;
 }
 
 /**
  * A rail anchor must not sit on another net's conductor: that reads as a
- * junction the circuit does not have. Nudge any such anchor and report whether
- * anything moved, so routing can be repeated against the new anchor positions.
+ * junction the circuit does not have. Nudge any such anchor and return the
+ * nodes that moved, so routing can be repeated against the new positions.
  */
 function avoidForeignWireAtAnchors(plan, wires, comps, bounds, locked) {
-  let moved = false;
+  const moved = new Set();
   for (const info of plan.values()) {
     if (!info.isRail || !info.point || locked?.has(info.id)) continue;
     const foreign = wires.filter((w) => w.node !== info.id);
@@ -1027,10 +1416,106 @@ function avoidForeignWireAtAnchors(plan, wires, comps, bounds, locked) {
     });
     if (dist(next, info.point) > 0.5) {
       info.point = next;
-      moved = true;
+      moved.add(info.id);
     }
   }
   return moved;
+}
+
+/**
+ * Put a derived node marker on a branch of its own network.
+ *
+ * A node anchor is either evidence (the dot the image drew, a position the user
+ * dropped) or a guess (a centroid of its terminals). Either way the marker only
+ * reads as a junction where at least three conductors meet: on a plain run, or
+ * at a single bend, it points at a place where nothing branches, which is the
+ * "dot in the middle of a wire" that looks like an invented junction. A derived
+ * anchor is therefore moved onto the best meeting point of its own wires, and
+ * the network is routed again so the wires actually meet there.
+ *
+ * Extracted dots and dragged anchors are evidence and are never moved here.
+ */
+// Drawn coordinates are whole canvas units; a terminal can still carry the
+// fraction it was projected with, so drawn positions are keyed rounded.
+const drawnKey = (p) => `${Math.round(p.x)}:${Math.round(p.y)}`;
+
+/**
+ * Where each node's own conductors touch, drawn position by drawn position.
+ *
+ * `ends` counts wires that stop there, `passes` counts wires that run through
+ * it (a vertex in the middle of a run), and `terminals` is added by the caller
+ * from the node's members.
+ */
+function wireTouchesByNode(wires) {
+  const byNode = new Map();
+  for (const w of wires) {
+    if (!w.node) continue;
+    if (!byNode.has(w.node)) byNode.set(w.node, new Map());
+    const bucket = byNode.get(w.node);
+    const last = w.points.length - 1;
+    w.points.forEach((point, index) => {
+      const k = drawnKey(point);
+      const entry = bucket.get(k) || { ends: 0, passes: 0, point };
+      if (index === 0 || index === last) entry.ends += 1;
+      else entry.passes += 1;
+      bucket.set(k, entry);
+    });
+  }
+  return byNode;
+}
+
+/**
+ * Is this position a place where conductors actually branch?
+ *
+ * Three conductors meeting is a branch. So is a conductor running *through* a
+ * point while another one or a terminal joins it there: that is a tee, and a
+ * marker on it sits on a real joint rather than beside one.
+ */
+function isBranchPoint(entry, terminalCount) {
+  if (!entry) return terminalCount >= 3;
+  const joins = entry.ends + terminalCount;
+  return joins >= 3 || (entry.passes >= 1 && joins >= 2);
+}
+
+function settleAnchorsOnBranches(plan, wires, locked = null, allowed = true) {
+  if (!allowed) return new Set();
+  const pointKey = drawnKey;
+  const endsByNode = wireTouchesByNode(wires);
+  const moved = new Set();
+  for (const info of plan.values()) {
+    if (!info.isRail || !info.point) continue;
+    if (info.anchorSource === 'extracted-junction' || locked?.has(info.id)) continue;
+    const bucket = endsByNode.get(info.id) || new Map();
+    const terminals = new Map();
+    for (const member of info.members) {
+      if (!member?.point) continue;
+      const k = pointKey(member.point);
+      terminals.set(k, (terminals.get(k) || 0) + 1);
+    }
+    // A meeting point is one where conductor ends and this node's own terminals
+    // together reach three: two wires that merely continue each other are a
+    // bend, not a junction.
+    if (isBranchPoint(bucket.get(pointKey(info.point)), terminals.get(pointKey(info.point)) || 0)) continue;
+
+    let best = null;
+    for (const [k, entry] of bucket) {
+      if (!isBranchPoint(entry, terminals.get(k) || 0)) continue;
+      const value = entry.ends + 2 * (terminals.get(k) || 0) + entry.passes;
+      const anchorDistance = dist(entry.point, info.point);
+      if (!best || value > best.score || (value === best.score && anchorDistance < best.anchorDistance)) {
+        best = { point: entry.point, score: value, anchorDistance };
+      }
+    }
+    if (!best) continue;
+    info.point = { x: best.point.x, y: best.point.y };
+    moved.add(info.id);
+  }
+  return moved;
+}
+
+/** The drawn positions of already-settled anchors, as plain points. */
+function fixedAnchorPoints(plan, ids) {
+  return [...ids].map((id) => plan.get(id)?.point).filter(Boolean);
 }
 
 /* ------------------------------------------------------------------ *\
@@ -1131,6 +1616,82 @@ function routeBetween(from, to, context) {
   candidates.push([from, { x: from.x, y: my }, { x: to.x, y: my }, to]);
   candidates.push([from, { x: mx, y: from.y }, { x: mx, y: to.y }, to]);
 
+  // A run whose direct options all cross a symbol needs a way around it: a
+  // Z-detour along one of the blocking box's four sides. Without these the
+  // router has nothing clear to choose and would draw straight through.
+  const lane = 12;
+  // A foreign terminal sitting on the only straight run has to be walked around,
+  // not merely penalised: a wire that crosses another net's terminal reads as a
+  // connection the circuit does not have. Two lanes per axis are enough to clear
+  // the point, and the scoring below still prefers a run that clears everything.
+  // A detour is only offered when it is itself clean: a lane that runs along
+  // another net's conductor, or ends on it, trades one false connection for
+  // another. Several distances are tried, because the nearest clear lane may be
+  // wider than the first.
+  const touchesForeignConductor = (raw) => {
+    const path = simplifyPath(raw);
+    const start = path[0];
+    const end = path[path.length - 1];
+    for (const [a, b] of segmentsOf(path)) {
+      for (const seg of context.existingSegments || []) {
+        const hit = segCrossPoint(a, b, seg.a, seg.b);
+        // Meeting another conductor at this detour's own start or end is the
+        // terminal it leaves from: unavoidable and not a short.
+        if (hit && dist(hit, start) > EPS && dist(hit, end) > EPS) return true;
+        if (collinearOverlap(a, b, seg.a, seg.b)) return true;
+      }
+    }
+    return false;
+  };
+  for (const point of context.avoidPoints || []) {
+    const blocked = candidates.some((raw) => segmentsOf(simplifyPath(raw)).some(
+      ([a, b]) => pointSegmentDistance(point, a, b) <= EPS,
+    ));
+    if (!blocked) continue;
+    for (const distance of [14, 26, 40]) {
+      for (const offset of [distance, -distance]) {
+        const around = [
+          [from, { x: point.x + offset, y: from.y }, { x: point.x + offset, y: to.y }, to],
+          [from, { x: from.x, y: point.y + offset }, { x: to.x, y: point.y + offset }, to],
+        ];
+        for (const path of around) {
+          if (touchesForeignConductor(path)) continue;
+          candidates.push(path);
+        }
+      }
+    }
+  }
+  for (const box of context.obstacles) {
+    if (context.excludeIds.includes(box.compId)) continue;
+    if (!segmentHitsBox(from, to, box) && !segmentHitsBox(from, { x: to.x, y: from.y }, box) &&
+        !segmentHitsBox(from, { x: from.x, y: to.y }, box) && !segmentHitsBox({ x: to.x, y: from.y }, to, box) &&
+        !segmentHitsBox({ x: from.x, y: to.y }, to, box)) continue;
+    candidates.push([
+      from,
+      { x: box.minX - lane, y: from.y },
+      { x: box.minX - lane, y: to.y },
+      to,
+    ]);
+    candidates.push([
+      from,
+      { x: box.maxX + lane, y: from.y },
+      { x: box.maxX + lane, y: to.y },
+      to,
+    ]);
+    candidates.push([
+      from,
+      { x: from.x, y: box.minY - lane },
+      { x: to.x, y: box.minY - lane },
+      to,
+    ]);
+    candidates.push([
+      from,
+      { x: from.x, y: box.maxY + lane },
+      { x: to.x, y: box.maxY + lane },
+      to,
+    ]);
+  }
+
   let best = null;
   let bestScore = Infinity;
 
@@ -1145,6 +1706,11 @@ function routeBetween(from, to, context) {
       for (const box of context.obstacles) {
         if (context.excludeIds.includes(box.compId)) continue;
         if (segmentHitsBox(a, b, box)) score += 600;
+      }
+      // Never draw over another net's terminal: touching one is an accidental
+      // connection, even though no wire endpoint lands there.
+      for (const point of context.avoidPoints || []) {
+        if (pointSegmentDistance(point, a, b) <= EPS) score += 900;
       }
       if (a.x < 6 || a.y < 6 || a.x > context.bounds.width - 6 || a.y > context.bounds.height - 6) {
         score += 600;
@@ -1173,7 +1739,410 @@ function keyOf(member) {
   return member.key ?? terminalKey(member.compId, member.label);
 }
 
-function routeWires(placed, plan, bounds) {
+/** Every terminal on the canvas that is not part of this node. */
+function foreignTerminalPoints(allTerminals, ownKeys) {
+  return allTerminals.filter((t) => !ownKeys.has(t.key)).map((t) => t.point);
+}
+
+/** A traced path is only drawn when the model was reasonably sure of the trace. */
+const EXTRACTED_WIRE_MIN_CONFIDENCE = 0.5;
+
+/**
+ * Largest wobble, in px, that still counts as axis-aligned. Schematics are drawn
+ * on a grid, so a polyline that runs diagonally between two terminals is the
+ * model joining endpoints with a straight line rather than tracing the
+ * conductor: it is not evidence of the drawing, and routing it orthogonally is
+ * more faithful than copying the shortcut.
+ */
+const TRACE_AXIS_TOLERANCE_PX = 2;
+
+/** True when every segment of the projected path is horizontal or vertical. */
+function traceIsAxisAligned(points) {
+  for (let i = 1; i < points.length; i += 1) {
+    const dx = Math.abs(points[i].x - points[i - 1].x);
+    const dy = Math.abs(points[i].y - points[i - 1].y);
+    if (dx > TRACE_AXIS_TOLERANCE_PX && dy > TRACE_AXIS_TOLERANCE_PX) return false;
+  }
+  return true;
+}
+
+/** Order-independent key for the terminal pair a wire joins. */
+const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+
+/* ------------------------------------------------------------------ *\
+ * Node networks
+ *
+ * A node with three or more terminals is a network, not a set of pairwise
+ * connections. Its drawing is rebuilt from the electrical graph and from the
+ * terminals as they are actually drawn: one shared spine through as many of
+ * them as are collinear, plus one perpendicular lead for each terminal that is
+ * off that spine. The junction dot rides the spine, so it marks a conductor
+ * instead of hanging off a decorative stub.
+ *
+ * Extracted pair traces are deliberately not copied for such a node. They are
+ * fragments of this one network: a fragment that stops a few pixels short of a
+ * terminal, that runs past the last terminal and comes back, or that was traced
+ * around the dot's extracted position, is exactly what produced loops, detours
+ * and short ties. The graph says what is connected; the terminals say where;
+ * the spine says how.
+ * ------------------------------------------------------------------ */
+
+/** A terminal this close to a candidate spine is treated as lying on it. */
+const SPINE_TOLERANCE = 0.5;
+
+/** How much longer than the direct run a copied trace may be. */
+const TRACE_MAX_DETOUR = 2;
+
+/** Wires shorter than this are dropped. Sub-pixel leads are still real wires. */
+const MIN_WIRE_LENGTH = 0.01;
+
+function axisPoint(axis, coord, along) {
+  return axis === 'x' ? { x: along, y: coord } : { x: coord, y: along };
+}
+
+/**
+ * Candidate spines for a node: both axes, through every terminal coordinate on
+ * the perpendicular axis. Nothing assumes horizontal rails or vertical
+ * branches — the axis and the coordinate are chosen by score, and both axes are
+ * always considered.
+ */
+function spineCandidates(members, obstacles) {
+  const candidates = [];
+  for (const axis of ['x', 'y']) {
+    const perp = axis === 'x' ? 'y' : 'x';
+    const coords = [...new Set(members.map((m) => m.point[perp]))];
+    for (const coord of coords) {
+      const on = [];
+      const off = [];
+      for (const member of members) {
+        if (Math.abs(member.point[perp] - coord) <= SPINE_TOLERANCE) on.push(member);
+        else off.push(member);
+      }
+      if (on.length === 0) continue;
+      const alongs = members.map((m) => m.point[axis]);
+      const lo = Math.min(...alongs);
+      const hi = Math.max(...alongs);
+      const start = axisPoint(axis, coord, lo);
+      const end = axisPoint(axis, coord, hi);
+      candidates.push({
+        axis,
+        perp,
+        coord,
+        on,
+        off,
+        stubSum: off.reduce((sum, m) => sum + Math.abs(m.point[perp] - coord), 0),
+        lo,
+        hi,
+        span: hi - lo,
+        // Every symbol counts here, including the members' own: a spine drawn
+        // along a terminal row grazes a body's edge and is fine, but one drawn
+        // through a body is not a corridor at all.
+        crossing: obstacles.some((box) => segmentHitsBox(start, end, box)),
+      });
+    }
+  }
+  // A spine drawn over a foreign symbol never wins over one that is not; after
+  // that the line carrying the most terminals wins, then the shortest total
+  // lead length, then the longest span (the drawn rail), then a stable
+  // axis/coordinate order, so the choice is deterministic.
+  candidates.sort((a, b) => (
+    Number(a.crossing) - Number(b.crossing) ||
+    a.off.length - b.off.length ||
+    a.stubSum - b.stubSum ||
+    b.span - a.span ||
+    (a.axis === b.axis ? a.coord - b.coord : a.axis === 'x' ? -1 : 1)
+  ));
+  return candidates;
+}
+
+/**
+ * Whole-path test for a copied trace: it must be a plausible drawing of the run
+ * it claims, not a detour, a loop, or a line through an unrelated component.
+ */
+function traceIsUsable(points, a, b, obstacles) {
+  if (!Array.isArray(points) || points.length < 2) return false;
+  const direct = Math.abs(a.point.x - b.point.x) + Math.abs(a.point.y - b.point.y);
+  if (pathLength(points) > direct * TRACE_MAX_DETOUR + 24) return false;
+  if (pathCrossesItself(points)) return false;
+  for (const [p, q] of segmentsOf(points)) {
+    for (const box of obstacles) {
+      if (box.compId === a.compId || box.compId === b.compId) continue;
+      if (segmentHitsBox(p, q, box)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Draw one electrical node as a single connected network.
+ *
+ * Every member's wire ends at the node anchor, and every wire runs *along the
+ * node's spine*: a member that sits on the spine connects straight to the
+ * anchor, one off it gets a perpendicular lead onto the spine first. Because
+ * the anchor is pulled onto the spine (an extracted dot is routinely a few
+ * pixels off its conductor), the junction dot ends up on the wire it marks
+ * rather than hanging below it on a stub — and the drawing is the shape the
+ * circuit actually has: a rail with leads, a trunk with taps, or one corner for
+ * a three-terminal bend.
+ */
+/**
+ * Draw one electrical node as the minimum connected geometry it needs.
+ *
+ * The electrical graph says which terminals must be joined; the drawing says
+ * where they are. This builds a chain over the node's terminals in the order
+ * they appear along the inferred spine, and joins each consecutive pair with a
+ * single wire routed along that spine. Every connection therefore exists
+ * exactly once: no member is given a second path to a hub, and no wire covers a
+ * span another wire already covers.
+ *
+ * The node's dot is placed on that chain, not beside it. When it sits on the
+ * spine the chain is split there, so the dot is a real joint in the network it
+ * marks. A dot the user positioned off the conductor keeps its position and is
+ * reached by one wire from the nearest terminal.
+ */
+/**
+ * Would this path draw over a component body or another net's terminal?
+ * A wire may leave its terminal along the symbol's edge, but never through a
+ * symbol and never across a terminal that belongs to a different node.
+ */
+function pathHitsForeignGeometry(path, obstacles, avoidPoints) {
+  for (const [a, b] of segmentsOf(path)) {
+    for (const box of obstacles) {
+      if (segmentHitsBox(a, b, box)) return true;
+    }
+    for (const point of avoidPoints || []) {
+      if (pointSegmentDistance(point, a, b) <= EPS) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Do two axis-aligned segments lie on top of each other?
+ *
+ * A crossing is visible; two conductors sharing a run are not, and they join the
+ * nets they belong to in every reading of the drawing. The check is used by the
+ * router (never draw one net over another) and by validation (report it).
+ */
+function collinearOverlap(a, b, c, d) {
+  const horizontal = Math.abs(a.y - b.y) <= EPS && Math.abs(c.y - d.y) <= EPS && Math.abs(a.y - c.y) <= EPS;
+  if (horizontal) {
+    return Math.min(Math.max(a.x, b.x), Math.max(c.x, d.x)) >
+      Math.max(Math.min(a.x, b.x), Math.min(c.x, d.x)) + EPS;
+  }
+  const vertical = Math.abs(a.x - b.x) <= EPS && Math.abs(c.x - d.x) <= EPS && Math.abs(a.x - c.x) <= EPS;
+  if (vertical) {
+    return Math.min(Math.max(a.y, b.y), Math.max(c.y, d.y)) >
+      Math.max(Math.min(a.y, b.y), Math.min(c.y, d.y)) + EPS;
+  }
+  return false;
+}
+
+/** Does any segment of this path leave both axes? */
+function pathHasDiagonal(path) {
+  return segmentsOf(path).some(([a, b]) => Math.abs(a.x - b.x) > EPS && Math.abs(a.y - b.y) > EPS);
+}
+
+/**
+ * Connect a node's dot to one of its own terminals.
+ *
+ * Where the image drew a dot and spread its terminals around it, the drawing it
+ * made is a set of spokes: each terminal reaches that dot directly. Bending
+ * every spoke into an orthogonal detour invents two runs the picture never had,
+ * and a diamond of arms then reads as a rectangle of rails. So a spoke is drawn
+ * straight whenever a straight run crosses no other component and no other
+ * net's terminal; the orthogonal route remains the fallback for a spoke that has
+ * to go around something.
+ */
+function spokeBetween(from, to, context, ownComps) {
+  const straight = simplifyPath([roundPoint(from), roundPoint(to)]);
+  if (straight.length === 2) {
+    const foreign = (context.obstacles || []).filter((box) => !ownComps.has(box.compId));
+    if (!pathHitsForeignGeometry(straight, foreign, context.avoidPoints)) return straight;
+  }
+  return routeBetween(from, to, {
+    obstacles: context.obstacles,
+    excludeIds: [],
+    existingSegments: context.existingSegments,
+    bounds: context.bounds,
+    avoidPoints: context.avoidPoints,
+  });
+}
+
+function buildNodeNetwork(nodeId, members, planInfo, context, pushWire, options = {}) {
+  const nodeKey = `NODE:${nodeId}`;
+  const ownComps = new Set(members.map((m) => m.compId));
+  const spine = spineCandidates(members, context.obstacles)[0];
+  if (!spine) return;
+
+  const alongOf = (p) => p[spine.axis];
+  const at = (along) => axisPoint(spine.axis, spine.coord, along);
+  const alongs = members.map((m) => alongOf(m.point));
+  const lo = Math.min(...alongs);
+  const hi = Math.max(...alongs);
+
+  // --- the image's own dot, when the node is a hub -------------------------
+  // An extracted junction is a landmark: where the image put its dot, the node
+  // really meets. When the terminals fan towards that dot instead of lying
+  // along one line, the node is a hub and the dot stays exactly where it was
+  // drawn, with each member reaching it (reusing an extracted conductor when
+  // the image already traced that lead). When the terminals do lie along a
+  // line, the chain below is the faithful drawing and the dot rides it.
+  const extractedDot =
+    planInfo?.anchorSource === 'extracted-junction' && planInfo.point
+      ? roundPoint(planInfo.point)
+      : null;
+  if (extractedDot) {
+    const fan = members.some(
+      (m) => Math.abs(m.point[spine.perp] - spine.coord) > SPINE_TOLERANCE,
+    );
+    const dotOffSpine = Math.abs(extractedDot[spine.perp] - spine.coord) > SPINE_TOLERANCE;
+    // A dot beyond the span of its own members is the point they hang off (a
+    // corner of the drawing), not a marker riding a conductor between them: the
+    // members converge on it. This is read from the positions alone, so it holds
+    // for any node, any orientation and any number of members.
+    const dotAlong = alongOf(extractedDot);
+    const dotBeyondMembers = dotAlong < lo - SPINE_TOLERANCE || dotAlong > hi + SPINE_TOLERANCE;
+    if ((fan && dotOffSpine) || dotBeyondMembers) {
+      const hub = { key: nodeKey, point: extractedDot };
+      // Minimum connected geometry: a spanning tree over the dot and the node's
+      // terminals. Two terminals that meet the dot from the same side then
+      // share one run instead of each drawing its own parallel wire into it.
+      const settled = [hub];
+      const pending = members.filter((m) => dist(m.point, extractedDot) >= 1);
+      const order = [];
+      while (pending.length > 0) {
+        let best = null;
+        for (const from of settled) {
+          for (const member of pending) {
+            // A conductor the image already traced from this terminal to its
+            // dot is evidence: it wins over any cheaper invented run.
+            const span =
+              Math.abs(from.point.x - member.point.x) + Math.abs(from.point.y - member.point.y);
+            // The dot is the node's joint, so a terminal only joins another
+            // terminal when it is clearly closer to it than to the dot: that is
+            // what keeps two nearly-coincident terminals from drawing parallel
+            // runs into the same dot, without turning every lead into a chain.
+            const cost = from.key === nodeKey
+              ? (options.hasTraceTo?.(member, extractedDot, nodeKey) ? -1 : span)
+              : span * 2;
+            if (!best || cost < best.cost) best = { cost, from, member };
+          }
+        }
+        order.push(best);
+        settled.push(best.member);
+        pending.splice(pending.indexOf(best.member), 1);
+      }
+      for (const { from, member } of order) {
+        // The image's own conductor wins where it already runs to this dot.
+        if (from.key === nodeKey && options.emitTraceTo?.(member, extractedDot, nodeId, nodeKey)) {
+          continue;
+        }
+        const spoke = spokeBetween(from.point, member.point, context, ownComps);
+        pushWire(
+          spoke,
+          ...(from.key < member.key ? [from.key, member.key] : [member.key, from.key]),
+          nodeId,
+          pathHasDiagonal(spoke) ? { spoke: true } : {},
+        );
+      }
+      planInfo.point = extractedDot;
+      return;
+    }
+  }
+
+  // --- where the dot goes ------------------------------------------------
+  // A dot the image drew, and a dot the user dragged, are both facts: they keep
+  // their position verbatim and the wires are drawn to them. Only a dot this
+  // layout invented is pulled onto the inferred spine (and kept clear of its own
+  // terminals, so no member's wire collapses to nothing). Sliding an extracted
+  // dot would replace image evidence with our own guess about the conductor.
+  let dotPoint = null;
+  if (planInfo?.point) {
+    const current = roundPoint(planInfo.point);
+    let along = clamp(alongOf(current), lo, hi);
+    const usable = (a) => {
+      const point = roundPoint(at(a));
+      if (members.some((member) => dist(point, member.point) < ANCHOR_MEMBER_CLEARANCE)) return false;
+      if ((options.avoidPoints || []).some((other) => dist(point, other) < ANCHOR_CLEARANCE)) return false;
+      return !context.obstacles.some((box) => !ownComps.has(box.compId) &&
+        point.x > box.minX - 2 && point.x < box.maxX + 2 &&
+        point.y > box.minY - 2 && point.y < box.maxY + 2);
+    };
+    const fromImage = planInfo.anchorSource === 'extracted-junction';
+    if (fromImage || options.fixedAnchors?.has(nodeId)) {
+      // A position the user chose, or the image drew, is authoritative; a wire
+      // reaches it, so it stays a marker on this node's network.
+      dotPoint = current;
+    } else {
+      if (!usable(along)) {
+        const slide = [1, -1, 2, -2, 3, -3]
+          .map((step) => clamp(along + step * ANCHOR_CLEARANCE, lo, hi))
+          .find(usable);
+        if (slide !== undefined) along = slide;
+      }
+      // An auto-placed dot always sits on the conductor it marks, however far
+      // the extraction put it from the terminals' line.
+      dotPoint = roundPoint(at(along));
+      planInfo.point = dotPoint;
+    }
+  }
+  const dotOnSpine = Boolean(dotPoint) &&
+    Math.abs(dotPoint[spine.perp] - spine.coord) <= SPINE_TOLERANCE;
+
+  // --- the chain ----------------------------------------------------------
+  // Sorted along the spine, so consecutive terminals are neighbours in the
+  // drawing and each span is drawn once.
+  const chain = members.map((member) => ({ key: member.key, point: member.point }));
+  if (dotOnSpine) chain.push({ key: nodeKey, point: dotPoint });
+  chain.sort((a, b) => (
+    alongOf(a.point) - alongOf(b.point) || (a.key === nodeKey ? 1 : -1)
+  ));
+
+  for (let i = 1; i < chain.length; i += 1) {
+    const a = chain[i - 1];
+    const b = chain[i];
+    // Both ends reach the spine on their own column; the span between those
+    // columns is shared by nothing else. Collinear points collapse.
+    let path = simplifyPath([a.point, at(alongOf(a.point)), at(alongOf(b.point)), b.point]);
+    if (pathHitsForeignGeometry(path, context.obstacles, context.avoidPoints)) {
+      // The spine corridor is blocked by a symbol or another net's terminal:
+      // route this span around it instead of drawing through it.
+      path = routeBetween(a.point, b.point, {
+        obstacles: context.obstacles,
+        excludeIds: [],
+        existingSegments: context.existingSegments,
+        bounds: context.bounds,
+        avoidPoints: context.avoidPoints,
+      });
+    }
+    pushWire(path, a.key, b.key, nodeId);
+  }
+
+  // A dot the user moved off the conductor is still a marker on this node: one
+  // wire reaches it from the nearest terminal, so it never floats free.
+  if (dotPoint && !dotOnSpine && chain.length > 0) {
+    const nearest = chain.reduce((best, entry) => (
+      Math.abs(alongOf(entry.point) - alongOf(dotPoint)) < Math.abs(alongOf(best.point) - alongOf(dotPoint))
+        ? entry
+        : best
+    ), chain[0]);
+    pushWire(
+      routeBetween(dotPoint, nearest.point, {
+        obstacles: context.obstacles,
+        excludeIds: [],
+        existingSegments: context.existingSegments,
+        bounds: context.bounds,
+        avoidPoints: context.avoidPoints,
+      }),
+      nodeKey,
+      nearest.key,
+      nodeId,
+    );
+  }
+}
+
+function routeWires(placed, plan, bounds, extractedWires = [], project = null, pinnedTraces = [], options = {}) {
   const obstacles = placed.map((c) => ({ ...c.symbolBox, compId: c.id }));
   const byNode = new Map();
   for (const comp of placed) {
@@ -1189,27 +2158,175 @@ function routeWires(placed, plan, bounds) {
     }
   }
 
+  // Every terminal on the canvas, so a route can avoid drawing over a terminal
+  // that belongs to another net.
+  const allTerminals = [];
+  for (const comp of placed) {
+    for (const t of comp.terminals || []) {
+      allTerminals.push({ key: terminalKey(comp.id, t.label), point: { x: t.x, y: t.y } });
+    }
+  }
+
   const wires = [];
   const existingSegments = [];
   let index = 1;
 
-  const pushWire = (points, from, to, nodeId) => {
+  // Traced paths from the analysis, keyed by the unordered terminal pair they
+  // join. They are the drawing itself, so they are preferred over re-routing;
+  // connections the model did not trace still get generated geometry.
+  const tracesByPair = new Map();
+  // Traces already resolved in layout coordinates (an edit that left their
+  // components alone). Keeping them is what makes a wire override keyed on the
+  // drawn wire still match after the reroute.
+  for (const w of pinnedTraces || []) {
+    if (!w || !w.from || !w.to || w.from === w.to) continue;
+    if (!Array.isArray(w.points) || w.points.length < 2) continue;
+    tracesByPair.set(pairKey(w.from, w.to), {
+      from: w.from,
+      to: w.to,
+      points: w.points,
+      pinned: true,
+      id: w.id ?? null,
+      confidence: w.confidence ?? 1,
+    });
+  }
+  for (const w of extractedWires || []) {
+    if (!project || !w) continue;
+    if (!Array.isArray(w.points) || w.points.length < 2) continue;
+    if ((w.confidence ?? 1) < EXTRACTED_WIRE_MIN_CONFIDENCE) continue;
+    if (!w.from || !w.to || w.from === w.to) continue;
+    const projected = w.points.map((p) => project(p));
+    if (projected.some((p) => !p)) continue;
+    if (pathLength(projected) < 1) continue; // zero-length / self-referential trace
+    if (!traceIsAxisAligned(projected)) continue; // straight-line shortcut
+    const key = pairKey(w.from, w.to);
+    const prev = tracesByPair.get(key);
+    if (!prev || (w.confidence ?? 1) > (prev.confidence ?? 1)) tracesByPair.set(key, w);
+  }
+  const usedIds = new Set();
+
+  const pushWire = (points, from, to, nodeId, meta = {}) => {
     const path = simplifyPath(points);
-    if (path.length < 2) return;
-    if (pathLength(path) < 1) return;
+    if (path.length < 2) return null;
+    if (pathLength(path) < MIN_WIRE_LENGTH) return null;
+    let id = meta.wireId && !usedIds.has(meta.wireId) ? meta.wireId : `W${index}`;
+    while (usedIds.has(id)) {
+      index += 1;
+      id = `W${index}`;
+    }
+    usedIds.add(id);
     const wire = {
-      id: `W${index}`,
+      id,
       points: path,
       from,
       to,
       node: nodeId,
-      isAutoRouted: true,
+      isAutoRouted: !meta.extracted,
+      isExtracted: Boolean(meta.extracted),
+      // A straight arm between an extracted junction and its own terminal: the
+      // picture's geometry, not a generated route, so it may legitimately run
+      // diagonally.
+      isSpoke: Boolean(meta.spoke),
       isCrossing: false,
-      confidence: 1,
+      confidence: meta.confidence ?? 1,
     };
     index += 1;
     wires.push(wire);
     for (const seg of segmentsOf(path)) existingSegments.push({ a: seg[0], b: seg[1], wireId: wire.id, node: nodeId });
+    return wire;
+  };
+
+  // Join a drawn terminal to a traced endpoint without bending the trace. The
+  // join is exactly axis-aligned: anything that is not already collinear gets
+  // one orthogonal corner, so a few px of terminal drift never becomes a
+  // diagonal segment (which the schematic and its editor both reject).
+  const attach = (terminal, end) => {
+    const dx = Math.abs(terminal.x - end.x);
+    const dy = Math.abs(terminal.y - end.y);
+    if (dx === 0 || dy === 0) return [end];
+    return dx >= dy
+      ? [{ x: end.x, y: terminal.y }, end]
+      : [{ x: terminal.x, y: end.y }, end];
+  };
+
+  // A traced path only describes the drawing where its components are actually
+  // drawn. When either end was placed by estimate, the image path would run
+  // through unrelated terminals, so that connection is re-routed instead.
+  const imagePlaced = new Set(placed.filter((c) => c.placedFromImage).map((c) => c.id));
+  const traceFits = (trace, a, b) => imagePlaced.has(a.compId) && imagePlaced.has(b.compId);
+
+  const emitTrace = (trace, a, b, nodeId) => {
+    if (trace.pinned) {
+      if (!traceIsUsable(trace.points, a, b, obstacles)) return false;
+      const kept = pushWire(trace.points, a.key, b.key, nodeId, {
+        extracted: true,
+        confidence: trace.confidence,
+        wireId: trace.id,
+      });
+      return Boolean(kept);
+    }
+    const pts = trace.points.map((p) => project(p)).filter(Boolean);
+    if (pts.length < 2) return false;
+    if (!traceFits(trace, a, b)) return false;
+    const ordered = trace.from === a.key && trace.to === b.key ? pts : [...pts].reverse();
+    // Extracted geometry is copied only where it is a plausible drawing of this
+    // run; a detour, a loop or a line through an unrelated component is not
+    // evidence of anything, so that run is routed from its terminals instead.
+    if (!traceIsUsable(ordered, a, b, obstacles)) return false;
+    // Every wire must begin and end exactly on its terminal: the schematic
+    // validator unions wire coordinates to prove an electrical node is drawn
+    // continuously, so a hairline gap would read as a broken connection.
+    const path = [
+      { x: a.point.x, y: a.point.y },
+      ...attach(a.point, ordered[0]),
+      ...ordered.slice(1, -1),
+      ...attach(b.point, ordered[ordered.length - 1]).reverse(),
+      { x: b.point.x, y: b.point.y },
+    ];
+    const wire = pushWire(path, a.key, b.key, nodeId, {
+      extracted: true,
+      confidence: trace.confidence ?? 1,
+      wireId: trace.id ?? null,
+    });
+    return Boolean(wire);
+  };
+
+  // Reuse an extracted conductor that already runs from a terminal to its
+  // node's dot: the image drew that lead, so the layout copies it instead of
+  // routing a replacement beside it.
+  const TRACE_DOT_TOLERANCE = 24;
+  const findTraceTo = (member, target, nodeKey) => {
+    if (!imagePlaced.has(member.compId)) return null;
+    for (const trace of tracesByPair.values()) {
+      if (trace.from !== member.key && trace.to !== member.key) continue;
+      // A pinned trace is already in layout coordinates; a fresh one is still in
+      // image coordinates and has to be projected.
+      const pts = trace.pinned ? trace.points : trace.points.map((p) => project(p)).filter(Boolean);
+      if (pts.length < 2) continue;
+      const ordered = trace.from === member.key ? pts : [...pts].reverse();
+      if (dist(ordered[ordered.length - 1], target) > TRACE_DOT_TOLERANCE) continue;
+      const end = { point: target, compId: nodeKey };
+      if (!traceIsUsable(ordered, member, end, obstacles)) continue;
+      const path = [
+        { x: member.point.x, y: member.point.y },
+        ...attach(member.point, ordered[0]),
+        ...ordered.slice(1),
+      ];
+      const last = path[path.length - 1];
+      if (last.x !== target.x || last.y !== target.y) path.push({ x: target.x, y: target.y });
+      return { path, trace };
+    }
+    return null;
+  };
+  const hasTraceTo = (member, target, nodeKey) => Boolean(findTraceTo(member, target, nodeKey));
+  const emitTraceTo = (member, target, nodeId, nodeKey) => {
+    const found = findTraceTo(member, target, nodeKey);
+    if (!found) return false;
+    return Boolean(pushWire(found.path, member.key, nodeKey, nodeId, {
+      extracted: true,
+      confidence: found.trace.confidence ?? 1,
+      wireId: found.trace.id ?? null,
+    }));
   };
 
   for (const [nodeId, members] of byNode) {
@@ -1221,19 +2338,27 @@ function routeWires(placed, plan, bounds) {
       const member = members[0];
       const comp = placed.find((c) => c.id === member.compId);
       if (!comp) continue;
-      const out = { x: comp.axis.x, y: comp.axis.y };
+      // The stub is generated geometry, so it must be orthogonal even when the
+      // component the image drew is diagonal: it points away along the body's
+      // dominant direction, never on the image's own diagonal.
+      const out = dominantAxis(comp.axis.x, comp.axis.y);
       const tip = roundPoint({ x: member.point.x + out.x * 18, y: member.point.y + out.y * 18 });
       pushWire([member.point, tip], member.key, `OPEN:${nodeId}`, nodeId);
       continue;
     }
 
     if (members.length === 2) {
-      // A two-member node is a plain corner/straight run between the terminals.
+      // The analysis traced this connection: draw what the image shows.
+      const trace = tracesByPair.get(pairKey(members[0].key, members[1].key));
+      if (trace && emitTrace(trace, members[0], members[1], nodeId)) continue;
+
+      // Untraced: a two-member node is a plain corner/straight run.
       const context = {
         obstacles,
         excludeIds: [members[0].compId, members[1].compId],
         existingSegments,
         bounds,
+        avoidPoints: foreignTerminalPoints(allTerminals, new Set(members.map((m) => m.key))),
       };
       pushWire(
         routeBetween(members[0].point, members[1].point, context),
@@ -1244,12 +2369,15 @@ function routeWires(placed, plan, bounds) {
       continue;
     }
 
-    // 3+ members: a single rail anchor with a segment from every member.
-    const anchor = plan.get(nodeId)?.point ?? centroid(members.map((m) => m.point));
-    for (const member of members) {
-      const context = { obstacles, excludeIds: [member.compId], existingSegments, bounds };
-      pushWire(routeBetween(member.point, anchor, context), member.key, `NODE:${nodeId}`, nodeId);
-    }
+    // 3+ members: the node is a drawn network, so rebuild it from the graph and
+    // the actual terminals — one spine plus perpendicular leads — rather than
+    // copying pair traces that stop short of terminals or hang off a dot.
+    buildNodeNetwork(nodeId, members, plan.get(nodeId) ?? null, {
+      obstacles,
+      existingSegments,
+      bounds,
+      avoidPoints: foreignTerminalPoints(allTerminals, new Set(members.map((m) => m.key))),
+    }, pushWire, { ...options, emitTraceTo, hasTraceTo });
   }
 
   return wires;
@@ -1259,24 +2387,166 @@ function routeWires(placed, plan, bounds) {
  * Stage 4 — junctions and crossings
  * ------------------------------------------------------------------ */
 
-function buildJunctions(plan) {
+/**
+ * A dot has to sit on the conductor it marks. Extracted positions are projected
+ * onto the canvas, so a dot can drift a pixel or two off the drawn wire before it
+ * is genuinely detached from it.
+ */
+const JUNCTION_ON_NET_TOLERANCE = 2.5;
+
+/** Every drawn segment of each node's own conductor, by node id. */
+function segmentsByNode(wires) {
+  const byNode = new Map();
+  for (const wire of wires) {
+    if (!wire?.node || !Array.isArray(wire.points)) continue;
+    if (!byNode.has(wire.node)) byNode.set(wire.node, []);
+    byNode.get(wire.node).push(...segmentsOf(wire.points));
+  }
+  return byNode;
+}
+
+function pointOnOwnSegments(point, segments) {
+  return segments.some(([a, b]) => pointSegmentDistance(point, a, b) <= JUNCTION_ON_NET_TOLERANCE);
+}
+
+/**
+ * The image's junction dots, resolved to the electrical node each one marks.
+ *
+ * A dot is evidence for a position only when every terminal it names belongs to
+ * one node and that node has at least two of them: a dot naming terminals from
+ * two nets is contradictory, and one naming a single terminal says nothing about
+ * where conductors branch.
+ */
+function extractedJunctionEvidence(junctions, graph, project, terminalKeys) {
+  const evidence = [];
+  for (const junction of Array.isArray(junctions) ? junctions : []) {
+    if (!junction?.position || !project) continue;
+    const named = Array.isArray(junction.members) ? junction.members : [];
+    const terminals = named.filter((m) => isTerminalKey(m, terminalKeys));
+    if (terminals.length < 2) continue;
+    const owners = (graph.nodes || []).filter((node) => {
+      const members = new Set(node.members || []);
+      const listed = terminals.filter((m) => members.has(m));
+      return listed.length >= 2 && listed.length === terminals.length;
+    });
+    if (owners.length !== 1) continue;
+    const point = project(junction.position);
+    if (!point) continue;
+    evidence.push({
+      nodeId: owners[0].id,
+      junctionId: junction.id ?? null,
+      point: roundPoint(point),
+    });
+  }
+  return evidence;
+}
+
+/**
+ * Every physical junction of every rail node.
+ *
+ * One electrical node can meet at several places on the drawing: a parallel
+ * circuit branches at two separate tees, and a rail with a tap in the middle is
+ * still one net. A junction dot is therefore a PROPERTY OF THE DRAWING (where
+ * three or more of this node's own conductors meet), not of the net: each such
+ * position gets its own marker, and they all resolve to the same `nodeId`.
+ *
+ * Exactly one marker per node is its anchor — the point the node's wires are
+ * routed to and the point a drag moves (`isAnchor`). The rest are branch
+ * markers: same node, own position, never moved by dragging the anchor.
+ *
+ * A dot the image drew is kept wherever it lies on its own conductor, even when
+ * only two conductors meet there (the picture put a dot, which is evidence). A
+ * dot that floats off the drawn conductor is not rendered: it would show a
+ * connection at a place this layout does not connect.
+ */
+export function buildJunctions(plan, wires = [], evidence = []) {
   const junctions = [];
   let idx = 1;
+  const touches = wireTouchesByNode(wires);
+  const ownSegments = segmentsByNode(wires);
+
   for (const info of plan.values()) {
     if (!info.isRail || !info.point) continue;
-    junctions.push({
-      id: `J${idx}`,
-      // The electrical node this dot draws. Renderers must key interaction on
-      // `nodeId`; the visual `J#` id is only a stable React key / display name.
-      nodeId: info.id,
-      x: info.point.x,
-      y: info.point.y,
-      members: info.members.map((m) => keyOf(m)),
-      memberCount: info.degree,
-      isJunction: true,
-      isRealJunction: true,
-    });
-    idx += 1;
+    const anchor = roundPoint(info.point);
+    const bucket = touches.get(info.id) || new Map();
+    // An extracted position and the terminal the layout actually drew can differ
+    // by a pixel or two (projection versus rounded body geometry). A dot belongs
+    // to the nearest drawn meeting point, so the two are matched with tolerance
+    // instead of by exact key.
+    const keyAt = (point) => {
+      let best = null;
+      for (const [k, entry] of bucket) {
+        const d = dist(entry.point, point);
+        if (d <= JUNCTION_ON_NET_TOLERANCE && (!best || d < best.d)) best = { k, d };
+      }
+      return best ? best.k : drawnKey(point);
+    };
+    const anchorKey = keyAt(anchor);
+
+    // How many of this node's own terminals arrive at each drawn position.
+    const terminals = new Map();
+    for (const member of info.members) {
+      if (!member?.point) continue;
+      const k = keyAt(member.point);
+      terminals.set(k, (terminals.get(k) || 0) + 1);
+    }
+
+    const points = new Map(); // drawn key -> { point, source }
+    // 1. Every place three or more of this node's conductors meet.
+    for (const [k, entry] of bucket) {
+      if (!isBranchPoint(entry, terminals.get(k) || 0)) continue;
+      points.set(k, { point: entry.point, source: 'branch' });
+    }
+    // 2. Extracted dots that the drawing actually carries.
+    for (const dot of evidence) {
+      if (dot?.nodeId !== info.id || !dot.point) continue;
+      const point = roundPoint(dot.point);
+      const k = keyAt(point);
+      if (points.has(k)) {
+        points.get(k).source = 'extracted';
+        continue;
+      }
+      if (!pointOnOwnSegments(point, ownSegments.get(info.id) || [])) continue;
+      points.set(k, { point, source: 'extracted' });
+    }
+    // 3. The anchor itself: it is where the node's wires meet, and what a drag
+    //    moves, so it always has a marker even if it is not a branch point. Its
+    //    position is taken verbatim from the node, so a dot always agrees with
+    //    the anchor it belongs to.
+    const anchorMarker = points.get(anchorKey);
+    if (anchorMarker) {
+      anchorMarker.point = anchor;
+      if (info.anchorSource === 'extracted-junction') anchorMarker.source = 'extracted';
+    } else {
+      points.set(anchorKey, {
+        point: anchor,
+        source: info.anchorSource === 'extracted-junction' ? 'extracted' : 'anchor',
+      });
+    }
+
+    // The anchor marker comes first so `J#` numbering stays stable and readable.
+    const ordered = [...points.entries()].sort((a, b) => (
+      Number(b[0] === anchorKey) - Number(a[0] === anchorKey)
+    ));
+    for (const [k, entry] of ordered) {
+      junctions.push({
+        id: `J${idx}`,
+        // The electrical node this dot draws. Renderers must key interaction on
+        // `nodeId`; the visual `J#` id is only a stable React key / display name.
+        nodeId: info.id,
+        x: entry.point.x,
+        y: entry.point.y,
+        members: info.members.map((m) => keyOf(m)),
+        memberCount: info.degree,
+        // Where this position came from, and whether it is the node's anchor: a
+        // drag moves the anchor and never another branch of the same net.
+        source: entry.source,
+        isAnchor: k === anchorKey,
+        isJunction: true,
+        isRealJunction: true,
+      });
+      idx += 1;
+    }
   }
   return junctions;
 }
@@ -1371,7 +2641,10 @@ export function validateSchematic(layout) {
   let orthogonal = true;
   for (const w of wires) {
     for (const [a, b] of segmentsOf(w.points)) {
-      if (Math.abs(a.x - b.x) > EPS && Math.abs(a.y - b.y) > EPS) {
+      // A traced path is the image's own geometry, and a spoke joins two
+      // extracted points along the picture's own arm, so both may legitimately
+      // run diagonally; only invented detours must be axis-aligned.
+      if (Math.abs(a.x - b.x) > EPS && Math.abs(a.y - b.y) > EPS && !w.isExtracted && !w.isSpoke) {
         errors.push(`Wire ${w.id} has a diagonal segment (${a.x},${a.y})→(${b.x},${b.y}).`);
         orthogonal = false;
       }
@@ -1470,9 +2743,11 @@ export function validateSchematic(layout) {
           const onEnd2 = dist(hit, s2[0]) <= EPS || dist(hit, s2[1]) <= EPS;
           if (onEnd1 && onEnd2) continue; // shared endpoint already covered above
           if (onEnd1 || onEnd2) {
-            errors.push(
-              `Wire ${w1.id} ends on the middle of wire ${w2.id} at (${Math.round(hit.x)},${Math.round(hit.y)}) — this reads as a junction but is not one.`,
-            );
+            const found = `Wire ${w1.id} ends on the middle of wire ${w2.id} at (${Math.round(hit.x)},${Math.round(hit.y)}) — this reads as a junction but is not one.`;
+            // Two traced paths meeting mid-run is what the source image draws;
+            // that is a faithful transcription, not a layout defect.
+            if (w1.isExtracted && w2.isExtracted) warnings.push(found);
+            else errors.push(found);
           }
         }
       }
@@ -1542,6 +2817,11 @@ export function validateSchematic(layout) {
 /** A connection is surfaced as uncertain only when it really is uncertain. */
 function connectionIsUncertain(c) {
   if (!c) return false;
+  // An inferred join is provisional by policy until geometric corroboration
+  // exists, so identify it by provenance rather than by any confidence value.
+  if (Array.isArray(c.provenance) && c.provenance.includes(PROVENANCE.INFERRED_WIRE)) {
+    return true;
+  }
   if (c.status === 'uncertain') return true;
   if (c.confidence != null && c.confidence < 0.7) return true;
   if (c.status === 'confirmed' || (c.confidence != null && c.confidence >= 0.85)) return false;
@@ -1563,6 +2843,9 @@ function emptyLayout() {
     crossings: [],
     uncertain: [],
     connections: [],
+    provisional: [],
+    diagnostics: [],
+    geometryNotes: [],
     validation: { isValid: false, errors: ['No components detected'], warnings: [] },
     incomplete: true,
     bounds,
@@ -1581,26 +2864,109 @@ export function layoutSchematic(analysis) {
   const raw = Array.isArray(analysis?.components) ? analysis.components.filter(Boolean) : [];
   if (raw.length === 0) return emptyLayout();
 
-  const augmented = analysisWithInferredConnections(analysis);
-  const graph = buildGraph(augmented);
+  // Geometric disagreements the pipeline found but did not "fix". They are
+  // surfaced as render warnings instead of being silently smoothed away.
+  const geometryNotes = [];
+
+  // buildGraph reconciles every claim (explicit, wire-inferred, node group) and
+  // keeps uncertain claims out of the electrical nodes.
+  const graph = buildGraph(analysis);
   const comps = graph.components;
   if (comps.length === 0) return emptyLayout();
 
   const bounds = canvasFor(analysis);
   const project = makeProjector(bounds);
 
-  const geometryCount = comps.filter(
-    (c) => c.terminals.filter((t) => t.position).length >= 2 || c.center,
-  ).length;
-  const useGeometry = geometryCount / comps.length >= 0.6;
+  // Geometry is handled per component: coordinates are never thrown away
+  // because some other component arrived without them.
+  const hasUsableGeometry = (c) => c.terminals.filter((t) => t.position).length >= 2 || Boolean(c.center);
+  const withGeometry = comps.filter(hasUsableGeometry);
+  const coverage = comps.length > 0 ? withGeometry.length / comps.length : 0;
+  const geometry = {
+    covered: withGeometry.length,
+    total: comps.length,
+    coverage,
+    missingComponentIds: comps.filter((c) => !hasUsableGeometry(c)).map((c) => c.id),
+  };
 
-  const plan = planNodes(graph, comps, bounds, project, useGeometry);
-  const components = planComponents(graph, comps, plan, useGeometry, project, bounds);
-  const wires = routeWires(components, plan, bounds);
+  const plan = planNodes(graph, comps, bounds, project, withGeometry.length > 0, graph.junctions, geometryNotes);
+  const components = planComponents(graph, comps, plan, project, bounds);
+  const contradictions = reportCoincidentComponents(components, geometryNotes);
+  // Geometry the image reported and geometry the layout had to approximate are
+  // reported separately, so a reader can tell what was drawn from evidence.
+  for (const comp of components) {
+    if (comp.lengthApproximate) {
+      geometryNotes.push(
+        `Component ${comp.id}: its extracted terminals are too close together to hold its symbol, ` +
+        `so its length is drawn from the layout minimum instead of the image.`,
+      );
+    }
+    if (comp.geometryUncertain && comp.geometryNote) {
+      geometryNotes.push(`Component ${comp.id}: ${comp.geometryNote}`);
+    }
+    if (comp.bodyOverhang) {
+      geometryNotes.push(
+        `Component ${comp.id}: the image reported a span shorter than its symbol, so the symbol is ` +
+        `drawn at a readable size and extends past its own terminals.`,
+      );
+    }
+  }
+  // The same anchor policy the editor uses, applied to the first render too:
+  // a dot may not land inside a symbol, on a foreign terminal, or so close to
+  // its own terminal that the member's wire is drawn collapsed. Dots the image
+  // reported are committed verbatim: they are evidence, not a guess.
+  const extractedAnchors = new Set(
+    [...plan.values()].filter((i) => i.anchorSource === 'extracted-junction').map((i) => i.id),
+  );
+  refineAnchors(plan, components, bounds, new Set(), extractedAnchors);
+  let wires = routeWires(components, plan, bounds, graph.wires, project);
+  // An anchor that lands on another net's conductor would draw a junction the
+  // circuit does not have. Settle those and route again, exactly as the editor
+  // does, so the first render is as honest as every later one.
+  const settled = new Set();
+  for (let pass = 0; pass < 2; pass += 1) {
+    const moved = avoidForeignWireAtAnchors(plan, wires, components, bounds, settled);
+    if (moved.size === 0) break;
+    for (const id of moved) settled.add(id);
+    wires = routeWires(components, plan, bounds, graph.wires, project, [], {
+      fixedAnchors: settled,
+      avoidPoints: fixedAnchorPoints(plan, settled),
+    });
+  }
+  // A marker that the layout guessed belongs where its wires actually branch,
+  // and the wires are drawn again so they meet it there.
+  for (let pass = 0; pass < 2; pass += 1) {
+    // Only a drawing that has geometry of its own can be settled: a
+    // coordinate-free circuit has no picture to preserve, and moving its
+    // invented anchors on every route would make the drawing churn.
+    const moved = settleAnchorsOnBranches(plan, wires, settled, withGeometry.length > 0);
+    if (moved.size === 0) break;
+    for (const id of moved) settled.add(id);
+    wires = routeWires(components, plan, bounds, graph.wires, project, [], {
+      fixedAnchors: settled,
+      avoidPoints: fixedAnchorPoints(plan, settled),
+    });
+  }
   // Re-place labels now that the wire routes are known, so a label card never
   // covers a conductor and makes it look disconnected.
   repositionLabels(components, wires, bounds);
-  const junctions = buildJunctions(plan);
+  const terminalKeys = new Set(comps.flatMap(
+    (c) => (c.terminals || []).map((t) => terminalKey(c.id, t.label)),
+  ));
+  const junctionEvidence = extractedJunctionEvidence(graph.junctions, graph, project, terminalKeys);
+  const junctions = buildJunctions(plan, wires, junctionEvidence);
+  // A dot the drawing does not carry is reported rather than drawn floating:
+  // a marker off its own conductor would show a connection this layout does not
+  // make.
+  for (const dot of junctionEvidence) {
+    const drawn = junctions.some((j) => j.nodeId === dot.nodeId
+      && Math.hypot(j.x - dot.point.x, j.y - dot.point.y) <= JUNCTION_ON_NET_TOLERANCE);
+    if (drawn) continue;
+    geometryNotes.push(
+      `Junction ${dot.junctionId ?? '(unnamed)'} of node ${dot.nodeId}: its position is not on the drawn ` +
+      `conductor for that net, so no marker is drawn there.`,
+    );
+  }
   const crossings = detectCrossings(wires, bounds);
 
   const nodes = graph.nodes.map((n) => {
@@ -1613,25 +2979,31 @@ export function layoutSchematic(analysis) {
       degree: info?.degree ?? n.members.length,
       isJunction: Boolean(info?.isRail),
       isRealJunction: Boolean(info?.isRail),
+      // Provenance of the anchor, so an edit can tell an extracted junction dot
+      // apart from a position the layout had to guess.
+      anchorSource: info?.anchorSource ?? null,
     };
   });
 
   const openNodes = nodes.filter((n) => n.degree < 2);
   const incomplete =
-    Boolean(augmented.reconstruction_incomplete) ||
+    Boolean(analysis?.reconstruction_incomplete) ||
     openNodes.length > 0 ||
     Boolean(graph.incomplete);
 
   const message = incomplete
     ? INCOMPLETE_MESSAGE
-    : !useGeometry
+    : coverage < 1
       ? APPROX_MESSAGE
       : null;
 
   const layout = {
     ok: true,
-    hasGeometry: useGeometry,
-    isApproximation: !useGeometry,
+    hasGeometry: withGeometry.length > 0,
+    // The warning now reflects real coverage: any component that had to be
+    // estimated raises it, and `geometry` names the ones that did.
+    isApproximation: coverage < 1,
+    geometry,
     nodes,
     components,
     wires,
@@ -1639,14 +3011,18 @@ export function layoutSchematic(analysis) {
     allWires: wires,
     junctions,
     crossings,
-    uncertain: (augmented.connections || [])
+    uncertain: [...(graph.connections || []), ...(graph.provisional || [])]
       .filter(connectionIsUncertain)
       .map((c) => ({
         from: `${c.from_component}.${c.from_terminal}`,
         to: `${c.to_component}.${c.to_terminal}`,
         notes: c.notes || 'Low-confidence connection.',
       })),
-    connections: augmented.connections || [],
+    connections: graph.connections || [],
+    // Claims withheld from the electrical graph (uncertain / low-confidence).
+    provisional: graph.provisional || [],
+    diagnostics: [...(graph.diagnostics || []), ...contradictions],
+    geometryNotes,
     validation: graph.validation,
     incomplete,
     bounds,
@@ -1654,6 +3030,7 @@ export function layoutSchematic(analysis) {
   };
 
   layout.renderValidation = validateSchematic(layout);
+  if (geometryNotes.length > 0) layout.renderValidation.warnings.push(...geometryNotes);
   return layout;
 }
 
@@ -2113,6 +3490,9 @@ export function rerouteLayout(layout, nodeOverrides = null, wireOverrides = null
       members,
       degree: members.length,
       isRail,
+      // Provenance is re-stated below for dots the image reported and this edit
+      // did not move; routing needs it to keep drawing the same junction.
+      anchorSource: null,
       point: keepDrawn
         ? roundPoint(settled)
         : (pts.length ? roundPoint(centroid(pts)) : settled ? roundPoint(settled) : { x: 0, y: 0 }),
@@ -2130,9 +3510,47 @@ export function rerouteLayout(layout, nodeOverrides = null, wireOverrides = null
     }
   }
 
+  // An extracted junction dot survives an edit that never moved its members:
+  // it is drawn evidence, not a derived centroid.
+  const preserved = new Set();
+  for (const node of nodes) {
+    if (node.anchorSource !== 'extracted-junction' || locked.has(node.id)) continue;
+    const entry = plan.get(node.id);
+    if (!entry || entry.members.length === 0 || !entry.members.every(unchanged)) continue;
+    entry.point = roundPoint({ x: node.x, y: node.y });
+    entry.anchorSource = 'extracted-junction';
+    preserved.add(node.id);
+  }
+
+  // The same for a derived anchor the drawing already settled on a branch: while
+  // none of its members moved, re-deriving it would only reproduce the point it
+  // is on, and any drift would rewrite the wires of a circuit nobody edited.
+  const previousEnds = wireTouchesByNode(layout.wires || []);
+  for (const node of nodes) {
+    const entry = plan.get(node.id);
+    if (!entry || !entry.isRail || locked.has(node.id) || preserved.has(node.id)) continue;
+    if (entry.members.length === 0 || !entry.members.every(unchanged)) continue;
+    const here = (previousEnds.get(node.id) || new Map()).get(drawnKey(node));
+    const ownTerminals = entry.members.filter(
+      (m) => m.point && drawnKey(m.point) === drawnKey(node),
+    ).length;
+    if (!isBranchPoint(here, ownTerminals)) continue;
+    entry.point = roundPoint({ x: node.x, y: node.y });
+    preserved.add(node.id);
+  }
+
   // Keep rail anchors readable after the move: apart from each other, out of
   // component drawings and clear of terminals, so no member wire can collapse.
-  refineAnchors(plan, components, bounds, locked);
+  // Conflicts on locked anchors are reported after assembly; nothing here
+  // repositions a node the user placed or a dot extracted from the image.
+  const fixed = new Set([...locked, ...preserved]);
+  const lockedConflicts = refineAnchors(plan, components, bounds, locked, preserved);
+
+  // Dots the image drew are evidence that survives an edit; a dot the layout only
+  // derived is re-derived from the new drawing instead of being copied forward.
+  const junctionEvidence = (layout.junctions || [])
+    .filter((j) => j.source === 'extracted')
+    .map((j) => ({ nodeId: j.nodeId ?? j.id, point: { x: j.x, y: j.y } }));
 
   // Assemble a layout around a given set of routed wires. Labels are placed
   // last so they dodge whatever geometry is actually drawn.
@@ -2152,23 +3570,90 @@ export function rerouteLayout(layout, nodeOverrides = null, wireOverrides = null
     // into it).
     const placed = components.map((c) => ({ ...c }));
     repositionLabels(placed, routedWires, bounds);
-    return describeEditedLayout({
+    const described = describeEditedLayout({
       ...layout,
       nodes: updatedNodes,
       components: placed,
       wires: routedWires,
       allWires: routedWires,
-      junctions: buildJunctions(plan),
+      junctions: buildJunctions(plan, routedWires, junctionEvidence),
       crossings: detectCrossings(routedWires, bounds),
     });
+    if (lockedConflicts.length === 0) return described;
+    // A position the user chose is never corrected for them: surface what the
+    // drawing could not reconcile instead of moving the node back. Added to the
+    // layout only when it happens, so the unchanged case keeps its old shape.
+    return {
+      ...described,
+      lockedAnchorConflicts: lockedConflicts,
+      renderValidation: {
+        ...described.renderValidation,
+        warnings: [
+          ...(described.renderValidation.warnings || []),
+          ...lockedConflicts.map((conflict) => conflict.message),
+        ],
+      },
+    };
   };
 
-  let wires = routeWires(components, plan, bounds);
+  // Traced paths whose components an edit did not touch are reused verbatim:
+  // the wires keep their identity (and therefore their override keys) instead
+  // of being re-routed into a differently-keyed set.
+  const termByKey = new Map();
+  for (const comp of components) {
+    for (const t of comp.terminals || []) {
+      termByKey.set(terminalKey(comp.id, t.label), { x: t.x, y: t.y });
+    }
+  }
+  // A rail's drawn trace also stops being valid when the junction dot it runs
+  // to was moved, even though every member terminal stayed put.
+  const anchorMoved = (w) => {
+    if (!w?.node) return false;
+    const entry = plan.get(w.node);
+    const settled = drawn.get(w.node);
+    if (!entry || !settled) return false;
+    return entry.point.x !== settled.x || entry.point.y !== settled.y;
+  };
+
+  // A traced lead may end on a node's dot instead of on a terminal (that is how
+  // a junction drawn in the image is traced), so an anchor is an acceptable
+  // endpoint for a pinned trace.
+  const anchorPoint = (key) => {
+    const name = String(key || '');
+    if (!name.startsWith('NODE:')) return null;
+    return plan.get(name.slice(5))?.point ?? null;
+  };
+  const endPoint = (key) => termByKey.get(key) ?? anchorPoint(key);
+  const pinnedTraces = (layout.wires || []).filter((w) => {
+    if (!w?.isExtracted || !Array.isArray(w.points) || w.points.length < 2) return false;
+    const a = endPoint(w.from);
+    const b = endPoint(w.to);
+    if (!a || !b) return false;
+    if (anchorMoved(w)) return false;
+    return (
+      dist(a, w.points[0]) <= 2 && dist(b, w.points[w.points.length - 1]) <= 2
+    );
+  });
+
+  const settled = new Set(fixed);
+  const routeOptions = () => ({
+    fixedAnchors: settled,
+    avoidPoints: fixedAnchorPoints(plan, settled),
+  });
+  let wires = routeWires(components, plan, bounds, [], null, pinnedTraces, routeOptions());
   // A nudged anchor changes the wires that touch it, so re-route briefly until
   // no rail anchor sits on another net's conductor.
   for (let pass = 0; pass < 2; pass += 1) {
-    if (!avoidForeignWireAtAnchors(plan, wires, components, bounds, locked)) break;
-    wires = routeWires(components, plan, bounds);
+    const moved = avoidForeignWireAtAnchors(plan, wires, components, bounds, settled);
+    if (moved.size === 0) break;
+    for (const id of moved) settled.add(id);
+    wires = routeWires(components, plan, bounds, [], null, pinnedTraces, routeOptions());
+  }
+  for (let pass = 0; pass < 2; pass += 1) {
+    const moved = settleAnchorsOnBranches(plan, wires, settled, layout.hasGeometry !== false);
+    if (moved.size === 0) break;
+    for (const id of moved) settled.add(id);
+    wires = routeWires(components, plan, bounds, [], null, pinnedTraces, routeOptions());
   }
 
   if (!wireOverrides || wireOverrides.size === 0) return assemble(wires);

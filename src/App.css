@@ -1273,6 +1273,21 @@
   color: var(--accent-resistance);
 }
 
+/* A unit the image did not yield: the number is still shown, the gap is not. */
+.unit-warning {
+  margin-left: 0.4rem;
+  padding: 0.02rem 0.32rem;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: 0.25rem;
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  cursor: help;
+}
+
 .analysis-component-terminals {
   font-size: 0.75rem;
   color: var(--text-muted);
@@ -1478,4 +1493,48 @@
   font-size: 16px;
   border-color: #38bdf8;
   color: #38bdf8;
+}
+
+/* Edit / Save controls in the reconstructed-circuit header */
+.rc-edit-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 8px;
+}
+
+.rc-action-btn {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #2d3748;
+  border-radius: 4px;
+  background-color: #111827;
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rc-action-btn:hover {
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+
+.rc-action-btn--primary {
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+
+.rc-action-btn--primary:hover {
+  background-color: rgba(56, 189, 248, 0.12);
+}
+
+.rc-saved-flag {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #10b981;
 }

@@ -159,6 +159,21 @@ const draggableSegments = (layout) => {
   return list;
 };
 
+/** Is this junction dot drawn on one of its own net's wires? */
+const dotOnOwnConductor = (layout, junction) => layout.wires
+  .filter((w) => w.node === junction.nodeId)
+  .some((w) => w.points.some((p, i) => {
+    if (i === 0) return false;
+    const a = w.points[i - 1];
+    const dx = p.x - a.x;
+    const dy = p.y - a.y;
+    const length = Math.hypot(dx, dy) || 1;
+    const offLine = Math.abs(dy * (junction.x - a.x) - dx * (junction.y - a.y)) / length;
+    if (offLine > 2.5) return false;
+    const t = ((junction.x - a.x) * dx + (junction.y - a.y) * dy) / (length * length);
+    return t >= -0.02 && t <= 1.02;
+  }));
+
 /**
  * Would this node position draw something false? Inside a symbol, on another
  * net's terminal, on an adjacent anchor, or on another net's conductor.
@@ -280,19 +295,32 @@ describe('anchor stability across edits', () => {
     for (const [name, layout] of LAYOUTS) {
       const rail = layout.nodes.find((n) => n.members.length >= 3);
       if (!rail) continue;
-      // A component that feeds this rail: moving it must move the rail.
+      // A rail anchor sits on a branch of its own conductors, and a component
+      // whose terminal IS that branch defines where the branch is: moving it
+      // must move the anchor. (A component that merely feeds the rail need not
+      // move it — the branch it sits on belongs to the other members.)
       const owner = layout.components.find((c) =>
-        rail.members.some((m) => m.startsWith(`${c.id}.`)),
+        (c.terminals || []).some((t) => Math.abs(t.x - rail.x) <= 2 && Math.abs(t.y - rail.y) <= 2),
       );
       if (!owner) continue;
 
       const next = rerouteLayout(moveComponent(layout, owner.id, 18, 12));
       const before = positions(rerouteLayout(layout));
       const after = positions(next);
-      expect(after.get(rail.id), `${name}: ${owner.id} moved but ${rail.id} stayed`)
-        .not.toBe(before.get(rail.id));
-
       const node = anchorOf(next, rail.id);
+      // The anchor may legitimately keep its position when the circuit still
+      // branches there, so the invariant is that it never sits on a stale point:
+      // either it moved with the branch, or three or more conductors still meet
+      // exactly where it is.
+      const stays = after.get(rail.id) === before.get(rail.id);
+      if (stays) {
+        const touching = next.components.reduce((count, c) => count + (c.terminals || [])
+          .filter((t) => Math.hypot(t.x - node.x, t.y - node.y) <= 2).length, 0);
+        const ends = next.wires.reduce((count, w) => count + [w.points[0], w.points[w.points.length - 1]]
+          .filter((p) => Math.hypot(p.x - node.x, p.y - node.y) <= 2).length, 0);
+        expect(ends + touching, `${name}: ${rail.id} did not move and no conductor meets it`)
+          .toBeGreaterThanOrEqual(3);
+      }
       expect(node.x).toBeGreaterThanOrEqual(0);
       expect(node.y).toBeGreaterThanOrEqual(0);
       expect(node.x).toBeLessThanOrEqual(next.bounds.width);
@@ -318,8 +346,24 @@ describe('anchor stability across edits', () => {
         for (const junction of next.junctions) {
           const node = nodes.get(junction.nodeId);
           expect(node, `${name}: junction without a node`).toBeTruthy();
-          expect({ x: junction.x, y: junction.y }, `${name}: dot off its anchor`)
-            .toEqual({ x: node.x, y: node.y });
+          if (junction.isAnchor) {
+            // The node's anchor dot is exactly where its wires are routed to.
+            expect({ x: junction.x, y: junction.y }, `${name}: anchor dot off its node`)
+              .toEqual({ x: node.x, y: node.y });
+          } else {
+            // Every other dot is a branch of that same net: it must sit on the
+            // net's own conductor, never on another net's geometry.
+            expect(dotOnOwnConductor(next, junction), `${name}: ${junction.id} is not on ${junction.nodeId}`)
+              .toBe(true);
+          }
+        }
+        // A rail is draggable through exactly one dot, so a drag can never move
+        // several physical junction markers at once.
+        for (const node of next.nodes.filter((n) => n.isJunction)) {
+          expect(
+            next.junctions.filter((j) => j.nodeId === node.id && j.isAnchor),
+            `${name}: ${node.id} needs one anchor marker`,
+          ).toHaveLength(1);
         }
         for (const wire of next.wires) {
           const ends = [
@@ -352,17 +396,23 @@ describe('anchor stability across edits', () => {
       // drawn badly, which is repaired once).
       expectStableAnchors(`${name}: dragging ${rail.id}`, layout, next, (node) => node.id === rail.id);
 
-      // Every member wire has to end at the junction it belongs to.
+      // The junction is a point on this node's own network: its wiring reaches
+      // the dropped position, every member keeps a wire, and the node is still
+      // one connected drawing.
+      const nodeWires = next.wires.filter((w) => w.node === rail.id);
+      expect(
+        nodeWires.some((w) => w.points.some(
+          (p) => Math.abs(p.x - target.x) <= 1 && Math.abs(p.y - target.y) <= 1,
+        )),
+        `${name}: no wire reaches the dragged junction`,
+      ).toBe(true);
       for (const member of rail.members) {
-        const wire = next.wires.find(
-          (w) => w.from === member || w.to === member,
-        );
-        if (!wire) continue;
-        const end = wire.from === member
-          ? wire.points[wire.points.length - 1]
-          : wire.points[0];
-        expect(end, `${name}: ${member}'s wire did not follow its junction`).toEqual(target);
+        expect(
+          next.wires.find((w) => w.from === member || w.to === member),
+          `${name}: ${member} lost its wire`,
+        ).toBeTruthy();
       }
+      expect(next.renderValidation.isValid, `${name}: dragged node is not one network`).toBe(true);
     }
   });
 
@@ -530,17 +580,16 @@ describe('junction drag priority', () => {
       const next = rerouteLayout(layout, new Map([[rail.id, dragTarget]]));
       const settled = anchorOf(next, rail.id);
 
-      // Every wire that belongs to this node must end at the settled position.
+      // The dragged junction stays a point on this node's own network, and the
+      // node is still drawn as one connected piece.
       const nodeWires = next.wires.filter((w) => w.node === rail.id);
-      for (const wire of nodeWires) {
-        const start = wire.points[0];
-        const end = wire.points[wire.points.length - 1];
-        const touchesAnchor =
-          (Math.abs(start.x - settled.x) <= 1 && Math.abs(start.y - settled.y) <= 1) ||
-          (Math.abs(end.x - settled.x) <= 1 && Math.abs(end.y - settled.y) <= 1);
-        expect(touchesAnchor, `${name}: wire ${wire.id} does not reach its junction after drag`)
-          .toBe(true);
-      }
+      expect(
+        nodeWires.some((w) => w.points.some(
+          (p) => Math.abs(p.x - settled.x) <= 1 && Math.abs(p.y - settled.y) <= 1,
+        )),
+        `${name}: no wire reaches its junction after drag`,
+      ).toBe(true);
+      expect(next.renderValidation.isValid, `${name}: dragged node is not one network`).toBe(true);
     }
   });
 });
@@ -577,7 +626,7 @@ describe('multiple locked junctions (accumulated nodeEdits)', () => {
     return 10;
   };
 
-  it('two locked junctions do not occupy the same position', () => {
+  it('two locked junctions keep both requested positions and report the conflict', () => {
     for (const [name, layout] of LAYOUTS) {
       const rails = layout.nodes.filter((n) => n.members.length >= 3);
       if (rails.length < 2) continue;
@@ -591,10 +640,23 @@ describe('multiple locked junctions (accumulated nodeEdits)', () => {
       ]);
       const next = rerouteLayout(layout, overrides);
 
+      // A locked anchor is a position the user chose, so neither one is moved —
+      // even when that leaves two dots on the same point.
       const a = anchorOf(next, first.id);
       const b = anchorOf(next, second.id);
-      const d = Math.hypot(a.x - b.x, a.y - b.y);
-      expect(d, `${name}: two locked junctions stacked on the same point`).toBeGreaterThan(0);
+      expect({ x: a.x, y: a.y }, `${name}: first locked anchor was moved`)
+        .toEqual(sharedTarget);
+      expect({ x: b.x, y: b.y }, `${name}: second locked anchor was moved`)
+        .toEqual(sharedTarget);
+
+      // The clash is reported through the layout's diagnostics instead.
+      const conflicts = next.lockedAnchorConflicts || [];
+      expect(conflicts.length, `${name}: stacked locked junctions were not reported`)
+        .toBeGreaterThan(0);
+      expect(conflicts.map((c) => c.nodeId), `${name}: the clash was not attributed to the second junction`)
+        .toContain(second.id);
+      expect(next.renderValidation.warnings.join(' '), `${name}: conflict message missing from validation warnings`)
+        .toContain('kept at');
     }
   });
 
@@ -652,7 +714,7 @@ describe('multiple locked junctions (accumulated nodeEdits)', () => {
     }
   });
 
-  it('the second locked anchor is nudged deterministically when it conflicts with the first', () => {
+  it('the second locked anchor keeps its requested position and reports the conflict deterministically', () => {
     for (const [name, layout] of LAYOUTS) {
       const rails = layout.nodes.filter((n) => n.members.length >= 3);
       if (rails.length < 2) continue;
@@ -671,14 +733,19 @@ describe('multiple locked junctions (accumulated nodeEdits)', () => {
       const b1 = anchorOf(once,  second.id);
       const b2 = anchorOf(twice, second.id);
 
-      // The nudged position must be identical across repeated calls.
+      // Both results are identical across repeated calls...
       expect({ x: b1.x, y: b1.y }, `${name}: second locked anchor drifted between identical rerouteLayout calls`)
         .toEqual({ x: b2.x, y: b2.y });
 
-      // And it must have actually moved away from the first anchor.
-      const a = anchorOf(once, first.id);
-      const d = Math.hypot(b1.x - a.x, b1.y - a.y);
-      expect(d, `${name}: second locked anchor was not nudged away from the first`).toBeGreaterThan(0);
+      // ...and neither run moved the anchor off the position the user chose.
+      expect({ x: b1.x, y: b1.y }, `${name}: second locked anchor was nudged away from its requested position`)
+        .toEqual(target);
+
+      // The overlap with the first locked anchor is reported, deterministically.
+      const idsOnce = (once.lockedAnchorConflicts || []).map((c) => c.nodeId);
+      const idsTwice = (twice.lockedAnchorConflicts || []).map((c) => c.nodeId);
+      expect(idsOnce, `${name}: second locked anchor conflict was not reported`).toContain(second.id);
+      expect(idsOnce).toEqual(idsTwice);
     }
   });
 

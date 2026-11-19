@@ -16,8 +16,10 @@ import {
   computeNodes,
   findCycle,
   ensureTerminals,
+  termKey,
   SOURCE_TYPES,
 } from './electricalGraph.js';
+import { reconcileTopology } from './topologyReconciliation.js';
 import {
   layoutSchematic,
   validateSchematic,
@@ -39,6 +41,7 @@ export {
   findCycle,
   ensureTerminals,
   SOURCE_TYPES,
+  reconcileTopology,
   applyEditToComponent,
   rerouteLayout,
   interiorSegmentAt,
@@ -82,16 +85,24 @@ export function validateRenderedCircuit(layout, graph) {
 
 /**
  * Quick topology summary for display.
+ *
+ * Reads the reconciled graph, so an uncertain claim that was withheld from the
+ * electrical nodes does not make this summary disagree with the drawing.
  */
 export function describeTopology(analysis) {
-  const components = Array.isArray(analysis?.components) ? analysis.components : [];
-  const connections = Array.isArray(analysis?.connections) ? analysis.connections : [];
-  const { nodeOf, nodes } = computeNodes(components, connections, analysis?.nodes || []);
-  const cycle = findCycle(components, nodeOf);
+  const graph = buildGraph(analysis);
+  const nodeOf = new Map();
+  for (const component of graph.components) {
+    for (const terminal of component.terminals) {
+      if (terminal.node) nodeOf.set(termKey(component.id, terminal.label), terminal.node);
+    }
+  }
+  const cycle = findCycle(graph.components, nodeOf);
   return {
-    componentCount: components.length,
-    connectionCount: connections.length,
-    nodeCount: nodes.length,
+    componentCount: graph.components.length,
+    connectionCount: graph.connections.length,
+    nodeCount: graph.nodes.length,
+    provisionalCount: graph.provisional.length,
     hasLoop: Boolean(cycle),
     loopLength: cycle ? cycle.length : 0,
   };

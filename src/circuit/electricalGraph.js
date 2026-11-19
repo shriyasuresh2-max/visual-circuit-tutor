@@ -15,6 +15,17 @@
  * buildGraph() is the main entry point. validateGraph() checks integrity.
  */
 
+import {
+  PROVENANCE,
+  classifyConnection,
+  connectionEndpoints,
+  memberKey,
+  normalizeLabel,
+  reconcileTopology,
+  splitTerminalKey,
+  termKey,
+} from './topologyReconciliation.js';
+
 /* ------------------------------------------------------------------ *
  * Union-Find (shared with circuitLayout.js — kept here for independence)
  * ------------------------------------------------------------------ */
@@ -37,12 +48,10 @@ class UnionFind {
 const SOURCE_TYPES = new Set(['battery', 'voltage_source', 'ac_voltage_source', 'current_source']);
 const PASSIVE_TYPES = new Set(['resistor', 'capacitor', 'inductor', 'diode', 'led', 'switch', 'ammeter', 'voltmeter']);
 
-// Export helpers for circuitLayout.js
+// Export helpers for circuitLayout.js. `termKey`/`normalizeLabel` are defined in
+// topologyReconciliation.js (the module that owns the terminal-key format) and
+// re-exported here so existing imports keep working unchanged.
 export { SOURCE_TYPES, PASSIVE_TYPES, termKey, polarityOf, ensureTerminals, normalizeLabel };
-
-function termKey(componentId, terminalLabel) {
-  return `${componentId}.${terminalLabel}`;
-}
 
 function polarityOf(label) {
   if (!label) return null;
@@ -50,15 +59,6 @@ function polarityOf(label) {
   if (['+', 'plus', 'positive', 'pos'].includes(l)) return '+';
   if (['−', '-', '–', 'minus', 'negative', 'neg', '_'].includes(l)) return '-';
   return null;
-}
-
-/** Canonical minus sign so ASCII '-' and Unicode '−' map to the same terminal key. */
-function normalizeLabel(label) {
-  if (label == null) return label;
-  const s = String(label).trim();
-  if (s === '-' || s === '–' || s === '−' || s.toLowerCase() === 'minus' || s.toLowerCase() === 'neg') return '−';
-  if (s === '+' || s.toLowerCase() === 'plus' || s.toLowerCase() === 'pos' || s.toLowerCase() === 'positive') return '+';
-  return s;
 }
 
 function clamp01(n) {
@@ -99,95 +99,89 @@ function ensureTerminals(components) {
  * Compute electrical nodes from components + connections + explicit node groups.
  * Uses union-find: connections merge terminals, explicit node groups also merge.
  *
- * @returns {{ nodeOf: Map<string,string>, nodes: Array<{id,members}> }}
+ * Two rules keep the result trustworthy:
+ *   - only terminals that a detected component actually declares can become
+ *     node members (a claim naming a phantom terminal is dropped, not drawn);
+ *   - a claim the confidence policy classifies as provisional is NOT unioned,
+ *     so an uncertain junction/crossing can never silently merge two nets.
+ *
+ * @returns {{
+ *   nodeOf: Map<string,string>,
+ *   nodes: Array<{id,members}>,
+ *   ignored: Array<{reason: string, key: string|null}>,
+ * }}
  */
 export function computeNodes(components, connections, explicitNodes = []) {
   const comps = ensureTerminals(components);
   const uf = new UnionFind();
 
-  // Seed all terminals
+  // The only keys that may ever become node members.
+  const validKeys = new Set();
   for (const c of comps) {
-    for (const t of c.terminals) uf.find(termKey(c.id, t.label));
-  }
-  if (Array.isArray(connections)) {
-    for (const conn of connections) {
-      if (!conn) continue;
-      uf.find(termKey(conn.from_component, normalizeLabel(conn.from_terminal)));
-      uf.find(termKey(conn.to_component, normalizeLabel(conn.to_terminal)));
+    for (const t of c.terminals) {
+      const key = termKey(c.id, t.label);
+      if (key) validKeys.add(key);
     }
   }
+  for (const key of validKeys) uf.find(key);
 
-  // Merge via connections — never invent extra unions from proximity or crossings
-  if (Array.isArray(connections)) {
-    for (const conn of connections) {
-      if (!conn) continue;
-      uf.union(
-        termKey(conn.from_component, normalizeLabel(conn.from_terminal)),
-        termKey(conn.to_component, normalizeLabel(conn.to_terminal)),
-      );
+  const ignored = [];
+  const list = Array.isArray(connections) ? connections : [];
+
+  // Merge via connections — never invent extra unions from proximity or
+  // crossings, and never merge a provisional claim.
+  for (const conn of list) {
+    if (!conn) continue;
+    const ends = connectionEndpoints(conn);
+    if (!ends) {
+      ignored.push({ reason: 'malformed-connection', key: null });
+      continue;
     }
+    const missing = [ends.a, ends.b].filter((key) => !validKeys.has(key));
+    if (missing.length) {
+      ignored.push({ reason: 'unknown-terminal', key: missing[0] });
+      continue;
+    }
+    if (ends.a === ends.b) continue;
+    if (!classifyConnection(conn).confirmed) continue;
+    uf.union(ends.a, ends.b);
   }
 
-  // Merge via explicit node groups
-  for (const ng of explicitNodes) {
-    if (!ng.members || ng.members.length < 2) continue;
-    const normGroupMembers = ng.members.map((m) => {
-      const dotIdx = m.lastIndexOf('.');
-      if (dotIdx !== -1) {
-        return termKey(m.slice(0, dotIdx), normalizeLabel(m.slice(dotIdx + 1)));
+  // Merge via explicit node groups, validated against the same terminal set.
+  for (const ng of Array.isArray(explicitNodes) ? explicitNodes : []) {
+    if (!ng || !Array.isArray(ng.members) || ng.members.length < 2) continue;
+    const keys = [];
+    for (const member of ng.members) {
+      const key = memberKey(member);
+      if (!key) continue;
+      if (!validKeys.has(key)) {
+        ignored.push({ reason: 'unknown-terminal', key });
+        continue;
       }
-      return m;
-    });
-    for (let i = 1; i < normGroupMembers.length; i++) {
-      uf.find(normGroupMembers[0]);
-      uf.find(normGroupMembers[i]);
-      uf.union(normGroupMembers[0], normGroupMembers[i]);
+      if (!keys.includes(key)) keys.push(key);
     }
+    for (let i = 1; i < keys.length; i += 1) uf.union(keys[0], keys[i]);
   }
 
-  // Group by root
+  // Group by root in component/terminal order (stable node numbering).
   const groups = new Map();
   const nodeOf = new Map();
-  const allKeys = new Set();
-
-  for (const c of comps) {
-    for (const t of c.terminals) allKeys.add(termKey(c.id, t.label));
-  }
-  if (Array.isArray(connections)) {
-    for (const conn of connections) {
-      if (!conn) continue;
-      allKeys.add(termKey(conn.from_component, normalizeLabel(conn.from_terminal)));
-      allKeys.add(termKey(conn.to_component, normalizeLabel(conn.to_terminal)));
-    }
-  }
-  for (const ng of explicitNodes) {
-    if (!Array.isArray(ng.members)) continue;
-    for (const m of ng.members) {
-      const dotIdx = m.lastIndexOf('.');
-      if (dotIdx !== -1) {
-        allKeys.add(termKey(m.slice(0, dotIdx), normalizeLabel(m.slice(dotIdx + 1))));
-      } else {
-        allKeys.add(m);
-      }
-    }
-  }
-
-  for (const k of allKeys) {
-    const root = uf.find(k);
+  for (const key of validKeys) {
+    const root = uf.find(key);
     if (!groups.has(root)) groups.set(root, []);
-    groups.get(root).push(k);
+    groups.get(root).push(key);
   }
 
   const nodes = [];
   let idx = 0;
   for (const [, members] of groups) {
     const id = `N${idx}`;
-    idx++;
+    idx += 1;
     nodes.push({ id, members: [...members] });
     for (const m of members) nodeOf.set(m, id);
   }
 
-  return { nodeOf, nodes };
+  return { nodeOf, nodes, ignored };
 }
 
 /* ------------------------------------------------------------------ *
@@ -268,6 +262,45 @@ export function findCycle(components, nodeOf) {
   return found;
 }
 
+/**
+ * Split a drawn value into its number and its unit, and say whether the unit is
+ * one a schematic legitimately carries.
+ *
+ * Extraction routinely mis-reads a unit glyph ("Ω" comes back as a Greek
+ * alpha). Guessing the intended unit from the component id or type would put a
+ * claim in the drawing that the image never made, so an unreadable unit is
+ * dropped and reported instead: the number survives, the unit is marked as not
+ * recognised.
+ */
+const KNOWN_UNITS = new Set([
+  'Ω', 'Ω', 'ohm', 'ohms',
+  'V', 'mV', 'kV', 'µV', 'uV',
+  'A', 'mA', 'µA', 'uA', 'kA',
+  'F', 'mF', 'µF', 'uF', 'nF', 'pF',
+  'H', 'mH', 'µH', 'uH',
+  'W', 'kW', 'mW', 'MW',
+  'J', 'kJ', 'C', 'S', 'VA', 'VAR', 'Ah', 'Wh',
+  'Hz', 'kHz', 'MHz', 'GHz', '%',
+]);
+
+export function splitValue(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return { value: null, unit: null, unitRecognized: true, rawUnit: null };
+  const match = text.match(/^([-+]?\d+(?:[.,]\d+)?)\s*(.*)$/);
+  if (!match || !match[2]) {
+    return { value: text, unit: match ? null : null, unitRecognized: true, rawUnit: null };
+  }
+  const number = match[1];
+  const unit = match[2].trim();
+  if (KNOWN_UNITS.has(unit)) return { value: text, unit, unitRecognized: true, rawUnit: unit };
+  // Only a single stray glyph is treated as a mis-read unit. Anything longer is
+  // left exactly as extracted: it may be a unit this list does not know, and
+  // rewriting it would be its own kind of invention.
+  const isStrayGlyph = [...unit].length === 1 && /[^\x20-\x7E]/.test(unit);
+  if (isStrayGlyph) return { value: number, unit: null, unitRecognized: false, rawUnit: unit };
+  return { value: text, unit: null, unitRecognized: true, rawUnit: null };
+}
+
 /* ------------------------------------------------------------------ *
  * Main entry: build canonical graph
  * ------------------------------------------------------------------ */
@@ -280,14 +313,15 @@ export function findCycle(components, nodeOf) {
  */
 export function buildGraph(analysis) {
   const { analysis: sanitized } = validateAnalysis(analysis);
-  const components = sanitized.components;
-  const connections = sanitized.connections;
   const wires = sanitized.wires;
   const junctions = sanitized.junctions;
-  const explicitNodes = sanitized.nodes;
 
-  const comps = ensureTerminals(components);
-  const { nodeOf, nodes } = computeNodes(comps, connections, explicitNodes);
+  // Reconcile every topological claim first: references are validated against
+  // exactly the terminals this graph uses, duplicates merge with their
+  // provenance kept, and uncertain claims are withheld from union-find.
+  const comps = ensureTerminals(sanitized.components);
+  const topology = reconcileTopology({ ...sanitized, components: comps });
+  const { nodeOf, nodes, ignored } = computeNodes(comps, topology.edges, []);
 
   // Check if geometry is available
   const hasComponentGeometry = comps.some((c) => c.center || c.bbox);
@@ -316,10 +350,17 @@ export function buildGraph(analysis) {
         }
       : null;
 
+    const drawn = splitValue(c.visible_value);
     return {
       id: c.id,
       type: c.type,
-      value: c.visible_value ?? null,
+      value: drawn.value,
+      // What the image said, and whether its unit could be read at all. Kept so
+      // a caller can show the raw text without presenting a wrong unit as fact.
+      valueRaw: c.visible_value ?? null,
+      valueUnit: drawn.unit,
+      valueUnitRecognized: drawn.unitRecognized,
+      valueUnitRaw: drawn.rawUnit,
       confidence: c.confidence ?? 1,
       status: c.status ?? (c.confidence >= 0.85 ? 'confirmed' : c.confidence >= 0.6 ? 'probable' : 'uncertain'),
       notes: c.notes ?? null,
@@ -356,10 +397,15 @@ export function buildGraph(analysis) {
 
   // Build junction entries (distinguishing true 3+ junctions from bends/terminals)
   const graphJunctions = junctions.map((j) => {
-    const normMembers = (j.members || []).map((m) => {
-      const dotIdx = m.lastIndexOf('.');
-      return dotIdx !== -1 ? termKey(m.slice(0, dotIdx), normalizeLabel(m.slice(dotIdx + 1))) : m;
-    });
+    // Membership is model output: keep only usable references, so one malformed
+    // entry cannot break the whole graph.
+    const rawMembers = Array.isArray(j?.members) ? j.members : [];
+    const normMembers = rawMembers
+      .filter((m) => typeof m === 'string' && m.trim() !== '')
+      .map((m) => {
+        const split = splitTerminalKey(m.trim());
+        return split ? termKey(split.component, split.terminal) : m.trim();
+      });
     const nodeAtPos = nodes.find((n) => n.members.some((m) => normMembers.includes(m)));
     const isRealJunction = normMembers.length >= 3 || (nodeAtPos && nodeAtPos.members.length >= 3);
     return {
@@ -377,26 +423,68 @@ export function buildGraph(analysis) {
     confidence: w.confidence,
   }));
 
-  // Validate
+  // `connections` means "image-reported electrical connections": an explicit
+  // claim, a junction dot's own node claim, or a claim derived from a traced
+  // wire. NodeGroup-only edges are grouping evidence and are exposed through
+  // `topology.edges` instead.
+  const isReported = (edge) =>
+    edge.provenance.includes(PROVENANCE.EXPLICIT) ||
+    edge.provenance.includes(PROVENANCE.JUNCTION) ||
+    edge.provenance.includes(PROVENANCE.INFERRED_WIRE);
+  const confirmedConnections = topology.edges.filter((edge) => edge.confirmed && isReported(edge));
+  const provisional = topology.edges.filter((edge) => !edge.confirmed);
+
+  const diagnostics = [...topology.diagnostics];
+  for (const c of graphComponents) {
+    if (c.valueUnitRecognized === false) {
+      diagnostics.push({
+        code: 'value-unit-unreadable',
+        severity: 'warning',
+        message: `${c.id}: the unit "${c.valueUnitRaw}" is not a recognised unit, so it is not drawn.`,
+        componentId: c.id,
+        rawUnit: c.valueUnitRaw,
+      });
+    }
+  }
+  for (const entry of ignored) {
+    diagnostics.push({
+      code: 'dropped-connection',
+      severity: 'warning',
+      message: `A connection could not be reconciled (${entry.reason}${entry.key ? `: ${entry.key}` : ''}).`,
+      key: entry.key ?? null,
+    });
+  }
+
+  // Structural validation deliberately keeps reading the raw claims, so a
+  // reference to an unknown component is still reported as a graph error.
   const validation = validateGraph({
     nodes,
     components: graphComponents,
     wires: graphWires,
     junctions: graphJunctions,
     crossings,
-    connections,
+    connections: sanitized.connections,
   });
 
   return {
     nodes,
     components: graphComponents,
+    // Recognised wire/junction evidence stays on the graph: geometry, ids,
+    // confidence and flags are preserved for later corroboration.
     wires: graphWires,
     junctions: graphJunctions,
     crossings,
-    connections,
+    connections: confirmedConnections,
+    provisional,
+    diagnostics,
+    topology: { edges: topology.edges, provisional, diagnostics },
     validation,
     hasGeometry,
-    incomplete: Boolean(sanitized.reconstruction_incomplete) || hasOpenTerminals(nodes) || !validation.isValid,
+    incomplete:
+      Boolean(sanitized.reconstruction_incomplete) ||
+      provisional.length > 0 ||
+      hasOpenTerminals(nodes) ||
+      !validation.isValid,
     reconstruction_incomplete: Boolean(sanitized.reconstruction_incomplete),
   };
 }

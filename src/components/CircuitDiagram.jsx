@@ -9,6 +9,13 @@ import {
   snapDistanceForZoom,
   snapTargetLabel,
 } from '../circuit/circuitLayout.js';
+import {
+  buildSavedCircuit,
+  isSavableLayout,
+  overridesFromSavedCircuit,
+} from '../circuit/savedCircuit.js';
+import { valueDisplay } from '../circuit/componentValue.js';
+import { LABEL_CARD, labelSize } from '../circuit/labelMetrics.js';
 
 /**
  * Technical SVG Schematic of a DC Series Circuit
@@ -28,6 +35,9 @@ export default function CircuitDiagram({
   activeStep,
   onSelectStep,
   analysisResult,
+  onSaveCircuit,
+  imageId,
+  savedCircuit,
 }) {
   // -----------------------------------------------------------------------
   // Reconstructed mode — render from image analysis
@@ -38,7 +48,15 @@ export default function CircuitDiagram({
   }, [analysisResult]);
 
   if (analysisResult && analysisResult.components?.length > 0) {
-    return <ReconstructedDiagram layout={layout} analysisResult={analysisResult} />;
+    return (
+      <ReconstructedDiagram
+        layout={layout}
+        analysisResult={analysisResult}
+        onSaveCircuit={onSaveCircuit}
+        imageId={imageId}
+        savedCircuit={savedCircuit}
+      />
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -75,7 +93,14 @@ const TYPE_COLORS = {
  * the +x axis) and transformed to the correct screen position + rotation.
  */
 function ComponentSymbol({ comp, selected }) {
-  const { x1, y1, x2, y2, type, value, id, posTerminal, status, labelPosition } = comp;
+  const { x1, y1, x2, y2, type, id, posTerminal, status, labelPosition } = comp;
+  // The value is drawn exactly as read; an unreadable unit is flagged beside it
+  // instead of being dropped or guessed.
+  const valueInfo = valueDisplay(comp);
+  // The card is drawn at exactly the size the layout reserved for it, so it can
+  // never spill over a neighbour.
+  const card = comp.labelSize ?? labelSize(comp);
+  const warned = Boolean(valueInfo.warning);
   const aIsPos = posTerminal === 'A';
   const bIsPos = posTerminal === 'B';
   const mx = comp.center?.x ?? Math.round((x1 + x2) / 2);
@@ -88,10 +113,17 @@ function ComponentSymbol({ comp, selected }) {
   // its leads, and the wire endpoints cannot disagree.
   const angle = comp.angle ?? (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
   const symbolHalf = comp.symbolHalf ?? 26;
+  // Along-axis compression of the glyph (1 = the type's design length). It is
+  // applied to the symbol's length only: the height, the stroke weight and the
+  // glyph's proportions across its axis stay at full size, which is what keeps a
+  // short component legible.
+  const symbolScale = comp.symbolScale ?? 1;
 
   // Leads run along the terminal vector (terminal 0 → terminal 1), which is the
-  // axis the layout built the symbol on. Each lead ends exactly on its terminal,
-  // so there is never a gap between the symbol body and the connecting wire.
+  // axis the layout built the symbol on. One end of each lead is the terminal,
+  // the other is the end of the body — so there is never a gap between the symbol
+  // and the wire, including when the body is longer than the gap between its own
+  // terminals and the lead therefore points outward to the body's end.
   const span = Math.hypot(x2 - x1, y2 - y1) || 1;
   const tx = (x2 - x1) / span;
   const ty = (y2 - y1) / span;
@@ -99,6 +131,7 @@ function ComponentSymbol({ comp, selected }) {
   const sy1 = my - ty * symbolHalf;
   const sx2 = mx + tx * symbolHalf;
   const sy2 = my + ty * symbolHalf;
+
 
   const perpX = -ty;
   const perpY = tx;
@@ -152,19 +185,38 @@ function ComponentSymbol({ comp, selected }) {
       )}
 
       {/* symbol */}
-      <g transform={`translate(${mx} ${my}) rotate(${angle})`}>
+      <g transform={`translate(${mx} ${my}) rotate(${angle}) scale(${symbolScale} 1)`}>
         {renderSymbol(type, color, aIsPos, bIsPos)}
       </g>
 
       {/* collision-free label card */}
       <g transform={`translate(${labelX} ${labelY})`}>
-        <rect x="-27" y="-15" width="54" height="30" rx="4" fill="#111827" stroke={borderColor} strokeWidth={status === 'uncertain' || status === 'probable' ? 1.5 : 1} />
-        <text x="0" y="-3" fill="#64748b" fontSize="8" fontWeight="600" textAnchor="middle" fontFamily="var(--font-mono)">
+        <rect
+          x={-card.width / 2}
+          y={-card.height / 2}
+          width={card.width}
+          height={card.height}
+          rx={LABEL_CARD.cornerRadius}
+          fill="#111827"
+          stroke={borderColor}
+          strokeWidth={status === 'uncertain' || status === 'probable' ? 1.5 : 1}
+        />
+        {/* Positions are unchanged for a plain card; the extra line only shifts
+            them on a card that reserves room for the warning. */}
+        <text x="0" y={warned ? -card.height / 2 + 7 : -3} fill="#64748b" fontSize="8" fontWeight="600" textAnchor="middle" fontFamily="var(--font-mono)">
           {id}{status === 'uncertain' ? ' ?' : status === 'probable' ? ' ~' : ''}
         </text>
-        <text x="0" y="9" fill={color} fontSize="10" fontWeight="700" textAnchor="middle" fontFamily="var(--font-mono)">
-          {value || (type !== 'unknown' ? '—' : '?')}
+        <text x="0" y={warned ? -card.height / 2 + 17 : card.height / 2 - 6} fill={color} fontSize="10" fontWeight="700" textAnchor="middle" fontFamily="var(--font-mono)">
+          {valueInfo.text || (type !== 'unknown' ? '—' : '?')}
         </text>
+        {warned && (
+          <>
+            <text x="0" y={card.height / 2 - 6} fill="#f59e0b" fontSize="6" fontWeight="700" textAnchor="middle" fontFamily="var(--font-mono)">
+              {valueInfo.warning}
+            </text>
+            <title>{`${valueInfo.warning} — extracted as “${valueInfo.raw}”`}</title>
+          </>
+        )}
       </g>
     </g>
   );
@@ -196,9 +248,11 @@ function renderSymbol(type, color, aIsPos, bIsPos) {
           {/* second cell */}
           <line x1={2} y1="-14" x2={2} y2="14" strokeWidth="3.5" />
           <line x1={-2} y1="-9" x2={-2} y2="9" strokeWidth="5" />
-          {/* polarity labels */}
-          <text x={-14} y="-18" fill="#38bdf8" fontSize="11" fontWeight="700" textAnchor="middle">+</text>
-          <text x={14} y="-18" fill="#94a3b8" fontSize="12" fontWeight="700" textAnchor="middle">−</text>
+          {/* Polarity labels sit just beside their own plate, inside the space
+              the layout reserves for this symbol, so they never land on a
+              neighbouring wire and read as a connection. */}
+          <text x={-16} y={-12} fill="#38bdf8" fontSize="10" fontWeight="700" textAnchor="middle">+</text>
+          <text x={16} y={-12} fill="#94a3b8" fontSize="11" fontWeight="700" textAnchor="middle">−</text>
         </g>
       );
 
@@ -326,8 +380,13 @@ const ENDPOINT_HANDLE_HIT = 10;
 // (indigo #818cf8, blue #38bdf8) so a preview can never read as a real join.
 const SNAP_PREVIEW_COLOR = '#f59e0b';
 
-function ReconstructedDiagram({ layout, analysisResult }) {
+function ReconstructedDiagram({ layout, analysisResult, onSaveCircuit, imageId, savedCircuit }) {
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
+  // Editing is opt-in: the drawing is read-only until the user presses Edit, so
+  // a stray click can no longer nudge a component. Every existing gesture
+  // (component drag, rotate, wire-segment drag, junction drag) is reused as-is.
+  const [isEditing, setIsEditing] = useState(false);
+  const [savedAt, setSavedAt] = useState(null);            // timestamp of the last Save
   const [selectedId, setSelectedId] = useState(null);     // component ID
   const [selectedNode, setSelectedNode] = useState(null); // node ID
   const [selectedWire, setSelectedWire] = useState(null); // wire ID
@@ -358,6 +417,28 @@ function ReconstructedDiagram({ layout, analysisResult }) {
       wireEdits.size > 0 ? wireEdits : null,
     );
   }, [layout, edits, nodeEdits, wireEdits]);
+
+  // --- Edit / Save mode --------------------------------------------------
+  const startEditing = useCallback(() => {
+    setIsEditing(true);
+    setSavedAt(null);
+  }, []);
+
+  const saveEdits = useCallback(() => {
+    // The document is built from the edited layout, so it records exactly what
+    // is on screen — never a re-derivation from the original image.
+    const savedDoc = buildSavedCircuit(editedLayout, undefined, wireEdits);
+    if (!savedDoc) return;
+    onSaveCircuit?.(savedDoc, imageId);
+    setIsEditing(false);
+    setSavedAt(savedDoc.savedAt);
+    dragRef.current = { mode: 'none' };
+    setWireDrag(null);
+    setEndpointDrag(null);
+    setSelectedId(null);
+    setSelectedNode(null);
+    setSelectedWire(null);
+  }, [editedLayout, onSaveCircuit, imageId]);
 
   // --- Zoom controls (button-only; wheel zoom was removed) -------------
   const onZoom = useCallback((factor) => {
@@ -395,6 +476,17 @@ function ReconstructedDiagram({ layout, analysisResult }) {
   // --- Pointer handlers: node drag, component drag, wire select, OR pan ---
   const onPointerDown = useCallback((e) => {
     if (e.button !== 0) return;
+
+    // Read-only until Edit is pressed: no selection, no drag, no rotate. Panning
+    // still works, because moving the view never changes the circuit.
+    if (!isEditing) {
+      setSelectedId(null);
+      setSelectedNode(null);
+      setSelectedWire(null);
+      dragRef.current = { mode: 'pan', x: e.clientX, y: e.clientY, ox: view.x, oy: view.y };
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      return;
+    }
 
     // The lead hitbox and crossing markers are painted above the wire polylines.
     // closest(e.target) only sees the top element, so look through those two
@@ -551,7 +643,7 @@ function ReconstructedDiagram({ layout, analysisResult }) {
     setSelectedWire(null);
     dragRef.current = { mode: 'pan', x: e.clientX, y: e.clientY, ox: view.x, oy: view.y };
     e.currentTarget.setPointerCapture?.(e.pointerId);
-  }, [view.x, view.y, editedLayout, clientToSvg]);
+  }, [view.x, view.y, editedLayout, clientToSvg, isEditing]);
 
   const onPointerMove = useCallback((e) => {
     const drag = dragRef.current;
@@ -628,15 +720,51 @@ function ReconstructedDiagram({ layout, analysisResult }) {
     setEndpointDrag(null);
   }, []);
 
-  // Clear all visual edits when a new circuit is loaded
+  // --- Automatic save of every successful reconstruction -----------------
+  // The parent's saved document is the authority: if `App` already holds a
+  // saved circuit for this upload, nothing is auto-saved, so an unmount and
+  // remount of this component cannot overwrite the user's edited circuit with
+  // the pristine reconstruction. The ref is only a same-mount optimisation —
+  // it prevents a re-render from saving the same layout twice, and is never the
+  // thing that decides whether a saved circuit exists. Edit state is
+  // deliberately not a dependency, so dragging can never re-trigger this.
+  const autoSavedLayout = useRef(null);
   useEffect(() => {
-    setEdits(new Map());
-    setNodeEdits(new Map());
-    setWireEdits(new Map());
+    if (!isSavableLayout(layout)) return;
+    if (savedCircuit) return;
+    if (autoSavedLayout.current === layout) return;
+    const savedDoc = buildSavedCircuit(layout);
+    if (!savedDoc) return;
+    autoSavedLayout.current = layout;
+    onSaveCircuit?.(savedDoc, imageId);
+  }, [layout, onSaveCircuit, imageId, savedCircuit]);
+
+  // Reset the working geometry for a new reconstruction, then — when the parent
+  // already holds a saved circuit for this upload (a remount, or navigating back
+  // to the workspace) — seed it from that document so editing resumes from the
+  // saved version rather than the pristine layout.
+  //
+  // `savedCircuit` is read but intentionally not a dependency: it changes when
+  // this very component saves, and re-running then would wipe the edits the user
+  // is still making. It only matters at the moment a layout is (re)established.
+  useEffect(() => {
     setSelectedId(null);
     setSelectedNode(null);
     setSelectedWire(null);
     setEndpointDrag(null);
+    setWireDrag(null);
+
+    if (layout && layout.ok && savedCircuit) {
+      const restored = overridesFromSavedCircuit(layout, savedCircuit);
+      setEdits(restored.componentEdits);
+      setNodeEdits(restored.nodeEdits);
+      setWireEdits(restored.wireEdits ?? new Map());
+    } else {
+      setEdits(new Map());
+      setNodeEdits(new Map());
+      setWireEdits(new Map());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout]);
 
   if (!layout || !layout.ok) {
@@ -672,8 +800,33 @@ function ReconstructedDiagram({ layout, analysisResult }) {
         <span className="diagram-caption-hint">
           {components.length} components · {nodes.length} nodes{displayWires.length > 0 ? ` · ${displayWires.length} wires` : ''}
         </span>
+        <div className="rc-edit-bar" role="group" aria-label="Circuit editing">
+          {!isEditing && savedAt && (
+            <span className="rc-saved-flag" role="status">Saved</span>
+          )}
+          {isEditing ? (
+            <button
+              type="button"
+              className="rc-action-btn rc-action-btn--primary"
+              onClick={saveEdits}
+              title="Keep these changes as the current circuit"
+            >
+              Save
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="rc-action-btn"
+              onClick={startEditing}
+              title="Enable circuit editing"
+            >
+              Edit
+            </button>
+          )}
+        </div>
+
         <div className="rc-zoom-bar" role="group" aria-label="Diagram zoom">
-          {selectedId && (
+          {isEditing && selectedId && (
             <button type="button" className="rc-zoom-btn rc-rotate-btn" onClick={onRotate} aria-label="Rotate selected component 90 degrees" title="Rotate 90°">⟳</button>
           )}
           <button type="button" className="rc-zoom-btn" onClick={() => onZoom(1 / 1.2)} aria-label="Zoom out">−</button>
@@ -713,7 +866,9 @@ function ReconstructedDiagram({ layout, analysisResult }) {
           onPointerLeave={onPointerUp}
           onPointerCancel={onPointerUp}
           style={{
-            cursor: endpointDrag
+            cursor: !isEditing
+              ? (dragRef.current.mode === 'pan' ? 'grabbing' : 'grab')
+              : endpointDrag
               ? 'crosshair'
               : wireDrag
               ? (wireDrag.dir === 'h' ? 'ns-resize' : 'ew-resize')
@@ -795,23 +950,33 @@ function ReconstructedDiagram({ layout, analysisResult }) {
             <ComponentSymbol key={c.id} comp={c} selected={c.id === selectedId} />
           ))}
 
-          {/* Junction dots — one per 3+-member electrical node, drawn exactly at
-              the rail anchor where its member wires meet. Each junction has a
-              large invisible hit circle for easy grabbing. */}
+          {/* Junction dots — one per physical branching point, so a net that
+              branches in two places shows two dots. Only the node's anchor dot
+              is draggable: dragging it moves the net's anchor, and it must never
+              drag the net's other branch points along with it. */}
           {junctions.filter((j) => j.isJunction !== false).map((j) => {
             // Interaction is keyed on the electrical node id (N0…), never on the
             // visual junction id (J1…), so a dot resolves to layout.nodes.
             const nodeId = j.nodeId ?? j.id;
+            const draggable = j.isAnchor !== false;
+            const selected = selectedNode === nodeId && draggable;
             return (
-              <g key={`jct-${j.id}`} data-node-id={nodeId} style={{ cursor: 'move' }}>
+              <g
+                key={`jct-${j.id}`}
+                {...(draggable ? { 'data-node-id': nodeId } : {})}
+                style={draggable ? { cursor: 'move' } : { pointerEvents: 'none' }}
+                aria-label={draggable ? `Junction ${j.id} of ${nodeId}` : `Branch junction ${j.id} of ${nodeId}`}
+              >
                 {/* Invisible hit area — much larger than the visible dot */}
-                <circle cx={j.x} cy={j.y} r="16" fill="transparent" stroke="none" />
+                {draggable && (
+                  <circle cx={j.x} cy={j.y} r="16" fill="transparent" stroke="none" />
+                )}
                 {/* Selection ring */}
-                {selectedNode === nodeId && (
+                {selected && (
                   <circle cx={j.x} cy={j.y} r="11" fill="none" stroke="#38bdf8" strokeWidth="1.5" strokeDasharray="3 2" opacity="0.8" />
                 )}
                 {/* Visible junction dot */}
-                <circle cx={j.x} cy={j.y} r="5" fill={selectedNode === nodeId ? '#38bdf8' : '#818cf8'} stroke="#0c111a" strokeWidth="1.5" />
+                <circle cx={j.x} cy={j.y} r="5" fill={selected ? '#38bdf8' : '#818cf8'} stroke="#0c111a" strokeWidth="1.5" />
               </g>
             );
           })}
