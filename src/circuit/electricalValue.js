@@ -2,13 +2,16 @@ const PREFIX = { '': 1, p: 1e-12, n: 1e-9, 'µ': 1e-6, m: 1e-3, k: 1e3, M: 1e6, 
 const UNITS = {
   resistance: /^([pnuµμmkKMG]?)\s*(?:Ω|[Oo][Hh][Mm][Ss]?)$/,
   voltage: /^([pnuµμmkKMG]?)\s*(?:[Vv]|[Vv][Oo][Ll][Tt][Ss]?)$/,
+  current: /^([pnuµμmkKMG]?)\s*(?:[Aa]|[Aa][Mm][Pp](?:[Ee][Rr][Ee])?[Ss]?)$/,
 };
+const BASE_UNITS = { resistance: 'Ω', voltage: 'V', current: 'A' };
 const NUMBER = '[+-]?(?:\\d+(?:[.,]\\d+)?|[.,]\\d+)(?:[eE][+-]?\\d+)?';
 const NUMBER_ONLY = new RegExp(`^${NUMBER}$`);
 const VALUE = new RegExp(`^(${NUMBER})(.*)$`);
 
 export function dcValueKind(type) {
   if (type === 'resistor') return 'resistance';
+  if (type === 'current_source') return 'current';
   return type === 'battery' || type === 'voltage_source' ? 'voltage' : null;
 }
 
@@ -40,7 +43,7 @@ export function parseDcValue(component) {
   }
 
   const prefix = (unitMatch?.[1] ?? '').replace(/[uμ]/, 'µ').replace('K', 'k');
-  const unit = prefix + (kind === 'resistance' ? 'Ω' : 'V');
+  const unit = prefix + BASE_UNITS[kind];
   const normalized = number.replace(',', '.');
   const value = Number(normalized) * PREFIX[prefix];
   const label = `${normalized} ${unit}`;

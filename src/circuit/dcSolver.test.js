@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { buildGraph } from './electricalGraph.js';
 import { solveDcCircuit } from './dcSolver.js';
+import { buildDcLesson } from './dcLesson.js';
+import { parseDcQuestion } from './dcQuestions.js';
 
 const resistor = (id, visible_value) => component(id, 'resistor', visible_value, ['A', 'B']);
 const source = (id, visible_value, labels = ['+', '−']) => component(id, 'voltage_source', visible_value, labels);
+const currentSource = (id, visible_value, fromTerminal = 'A', toTerminal = 'B') => ({
+  ...component(id, 'current_source', visible_value, ['A', 'B']),
+  currentDirection: { fromTerminal, toTerminal },
+});
 
 function component(id, type, visible_value, labels) {
   return { id, type, visible_value, terminals: labels.map((label) => ({ label })) };
@@ -56,7 +62,8 @@ function checkSolution(graph, result, nodeVoltages, branchValues, loops) {
     let sum = 0;
     for (const [id, direction] of loop) {
       const branch = branches.get(id);
-      sum += direction * (branch.sourceVoltage ?? branch.resistance * branch.current);
+      sum += direction * (branch.sourceCurrent != null ? branch.voltage
+        : branch.sourceVoltage ?? branch.resistance * branch.current);
     }
     expect(sum).toBeCloseTo(0, 10);
   }
@@ -147,6 +154,96 @@ describe('solveDcCircuit uses reconstructed electrical nodes', () => {
     checkSolution(graph, solveDcCircuit(graph), { 'S.+': 12, 'P.B': 12, 'Q.B': 12, 'S.−': 0 },
       { S: [12, -3], R: [12, 3], P: [0, 0], Q: [0, 0], T: [0, 0] },
       [[['S', 1], ['R', -1]], [['P', 1], ['Q', 1], ['T', 1]]]);
+  });
+});
+
+describe('solveDcCircuit stamps independent ideal current sources into KCL', () => {
+  function currentLoop(value, fromTerminal = 'A', toTerminal = 'B') {
+    return graphFrom([currentSource('I', value, fromTerminal, toTerminal), resistor('R', '2 kΩ')],
+      [['I.A', 'R.B'], ['I.B', 'R.A']]);
+  }
+
+  it.each([['2 mA', 0.002], ['−0.002 amperes', -0.002], ['0 A', 0]])(
+    'solves one current source feeding a resistor at %s',
+    (value, amps) => {
+      const graph = currentLoop(value);
+      const result = solveDcCircuit(graph);
+      checkSolution(graph, result, { 'I.A': 0, 'I.B': 2000 * amps },
+        { I: [-2000 * amps, amps], R: [2000 * amps, amps] }, [[['I', 1], ['R', 1]]]);
+      const branch = result.branches.find(({ componentId }) => componentId === 'I');
+      expect(branch).toMatchObject({
+        sourceCurrent: amps, fromTerminal: 'A', toTerminal: 'B',
+        fromNodeId: result.referenceNodeId,
+      });
+      expect(branch).not.toHaveProperty('sourceVoltage');
+      expect(branch).not.toHaveProperty('resistance');
+    },
+  );
+
+  it('uses the declared direction even when it reverses terminal order', () => {
+    const graph = currentLoop('2 mA', ' B ', 'A');
+    const result = solveDcCircuit(graph);
+    expect(graph.components[0].currentDirection).toEqual({ fromTerminal: 'B', toTerminal: 'A' });
+    checkSolution(graph, result, { 'I.A': 0, 'I.B': -4 },
+      { I: [-4, 0.002], R: [-4, -0.002] }, [[['I', 1], ['R', -1]]]);
+    expect(result.branches[0]).toMatchObject({ fromTerminal: 'B', toTerminal: 'A' });
+  });
+
+  it('superposes multiple parallel current sources with opposite directions', () => {
+    const graph = graphFrom([
+      currentSource('I1', '3 A'), currentSource('I2', '1 A', 'B', 'A'),
+      currentSource('I3', '500 mA'), resistor('R', '4 Ω'),
+    ], [['I1.A', 'I2.A', 'I3.A', 'R.B'], ['I1.B', 'I2.B', 'I3.B', 'R.A']]);
+    checkSolution(graph, solveDcCircuit(graph), { 'I1.A': 0, 'I1.B': 10 },
+      { I1: [-10, 3], I2: [10, 1], I3: [-10, 0.5], R: [10, 2.5] },
+      [[['I1', 1], ['R', 1]], [['I2', 1], ['I3', 1]]]);
+  });
+
+  it('uses the voltage-source reference and solves a source between two non-reference nodes', () => {
+    const graph = graphFrom([
+      currentSource('I', '1 A'), source('V', '8 V'), resistor('R1', '2 Ω'), resistor('R2', '4 Ω'),
+    ], [['I.A', 'V.+', 'R1.A'], ['I.B', 'R1.B', 'R2.A'], ['V.−', 'R2.B']]);
+    const result = solveDcCircuit(graph);
+    checkSolution(graph, result, { 'V.+': 8, 'I.B': 20 / 3, 'V.−': 0 },
+      { I: [4 / 3, 1], V: [8, -5 / 3], R1: [4 / 3, 2 / 3], R2: [20 / 3, 5 / 3] },
+      [[['I', 1], ['R2', 1], ['V', -1]], [['I', 1], ['R1', -1]]]);
+    const lesson = buildDcLesson(graph, result, parseDcQuestion(''));
+    const substituted = lesson.steps.find(({ id }) => id === 'substitute').equations;
+    expect(substituted.filter(({ kind }) => kind === 'source-constraint')).toHaveLength(1);
+    const signedTerms = substituted.flatMap(({ terms }) => terms ?? []).filter(({ branchId }) => branchId === 'I');
+    expect(signedTerms.map(({ sign, sourceCurrent }) => [sign, sourceCurrent])).toEqual([[1, 1], [-1, 1]]);
+  });
+
+  it('reports zero drop when both current-source terminals share one node', () => {
+    const graph = graphFrom([currentSource('I', '2 A')], [['I.A', 'I.B']]);
+    checkSolution(graph, solveDcCircuit(graph), { 'I.A': 0 }, { I: [0, 2] }, []);
+  });
+
+  it.each([
+    ['2 A', 'singular-system'],
+    ['1 A', 'inconsistent-system'],
+  ])('classifies a current-only cut with opposing currents of 2 A and %s', (other, code) => {
+    const graph = graphFrom([currentSource('I1', '2 A'), currentSource('I2', other, 'B', 'A')],
+      [['I1.A', 'I2.A'], ['I1.B', 'I2.B']]);
+    expect(solveDcCircuit(graph)).toMatchObject({
+      ok: false, issues: [{ code, sourceIds: ['I1', 'I2'], nodeIds: [graph.nodes[1].id] }],
+    });
+  });
+
+  it.each(['2 V', '2', '2 \u0300', '1e999 A'])('rejects invalid source current %s', (value) => {
+    expect(solveDcCircuit(currentLoop(value))).toMatchObject({
+      ok: false, issues: [{ code: 'invalid-current', componentId: 'I' }],
+    });
+  });
+
+  it('requires a direction between distinct declared terminals', () => {
+    for (const direction of [undefined, { fromTerminal: 'A', toTerminal: 'A' }, { fromTerminal: 'A', toTerminal: 'Q' }]) {
+      const graph = currentLoop('1 A');
+      graph.components[0].currentDirection = direction;
+      expect(solveDcCircuit(graph)).toMatchObject({
+        ok: false, issues: [{ code: 'unknown-current-direction', componentId: 'I' }],
+      });
+    }
   });
 });
 

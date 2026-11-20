@@ -62,6 +62,17 @@ function polarityOf(label) {
   return null;
 }
 
+/** Resolve an explicit arrow against two distinct declared terminals. */
+export function currentSourceDirection(component) {
+  if (component.type !== 'current_source' || component.terminals?.length !== 2) return null;
+  const fromTerminal = normalizeLabel(component.currentDirection?.fromTerminal);
+  const toTerminal = normalizeLabel(component.currentDirection?.toTerminal);
+  if (!fromTerminal || !toTerminal || fromTerminal === toTerminal ||
+      ![fromTerminal, toTerminal].every((label) =>
+        component.terminals.some((terminal) => normalizeLabel(terminal.label) === label))) return null;
+  return { fromTerminal, toTerminal };
+}
+
 function clamp01(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return null;
@@ -320,7 +331,10 @@ export function buildGraph(analysis) {
   // Reconcile every topological claim first: references are validated against
   // exactly the terminals this graph uses, duplicates merge with their
   // provenance kept, and uncertain claims are withheld from union-find.
-  const comps = ensureTerminals(sanitized.components);
+  const comps = ensureTerminals(sanitized.components.map((component) =>
+    component.type === 'current_source'
+      ? { ...component, currentDirection: currentSourceDirection(component) }
+      : component));
   const topology = reconcileTopology({ ...sanitized, components: comps });
   const { nodeOf, nodes, ignored } = computeNodes(comps, topology.edges, []);
 
@@ -377,6 +391,9 @@ export function buildGraph(analysis) {
       height: bbox?.height ?? null,
       orientation: c.orientation ?? null,
       posTerminal,
+      // An arrow direction is electrical input. Geometry and terminal order
+      // do not establish it.
+      ...(c.type === 'current_source' ? { currentDirection: c.currentDirection } : {}),
       terminals: c.terminals.map((t) => ({
         label: t.label,
         node: nodeOf.get(termKey(c.id, t.label)) ?? null,

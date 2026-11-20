@@ -1004,6 +1004,7 @@ function planComponents(graph, comps, plan, project, bounds) {
         lengthSource: spanIsEvidence ? 'extracted' : spanFromImage ? 'short-extracted' : 'inferred',
         lengthApproximate: lengthIsApproximate,
         posTerminal,
+        ...(c.type === 'current_source' ? { currentDirection: c.currentDirection } : {}),
         nodeA: na,
         nodeB: nb,
         x1: t0Point.x,
@@ -2650,6 +2651,7 @@ export function buildJunctions(plan, wires = [], evidence = [], components = [])
       Number(b[0] === anchorKey) - Number(a[0] === anchorKey)
     ));
     for (const [k, entry] of ordered) {
+      const touch = bucket.get(k);
       junctions.push({
         id: `J${idx}`,
         // The electrical node this dot draws. Renderers must key interaction on
@@ -2665,6 +2667,7 @@ export function buildJunctions(plan, wires = [], evidence = [], components = [])
         isAnchor: k === anchorKey,
         isJunction: true,
         isRealJunction: entry.source !== 'anchor',
+        isBranchPoint: Boolean(touch && isBranchPoint(touch, terminals.get(k) || 0)),
       });
       idx += 1;
     }

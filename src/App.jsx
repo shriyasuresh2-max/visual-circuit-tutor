@@ -10,7 +10,7 @@ import StepExplainer from './components/StepExplainer.jsx';
 import ReferenceViewer from './components/ReferenceViewer.jsx';
 import { solveOhmSeriesCircuit } from './circuit/circuitEngine.js';
 import { buildGraph } from './circuit/electricalGraph.js';
-import { applyComponentValues } from './circuit/componentValue.js';
+import { applyComponentEdits } from './circuit/componentValue.js';
 import { useCircuitAnalysis } from './hooks/useCircuitAnalysis.js';
 import './App.css';
 
@@ -55,7 +55,7 @@ export default function App() {
   const { analysisState, analyzeImage, clearAnalysis } = useCircuitAnalysis();
   const extractedAnalysis = analysisState.status === 'success' ? analysisState.result : null;
   const analysisResult = useMemo(
-    () => applyComponentValues(extractedAnalysis, componentValues),
+    () => applyComponentEdits(extractedAnalysis, componentValues),
     [extractedAnalysis, componentValues],
   );
   const electricalGraph = useMemo(
@@ -66,7 +66,13 @@ export default function App() {
   );
 
   const handleApplyComponentValues = useCallback((updates) => {
-    if (updates.size > 0) setComponentValues((previous) => new Map([...previous, ...updates]));
+    if (updates.size > 0) {
+      setComponentValues((previous) => {
+        const merged = new Map(previous);
+        for (const [id, edit] of updates) merged.set(id, { ...merged.get(id), ...edit });
+        return merged;
+      });
+    }
   }, []);
   const handleLessonStep = useCallback((step) => {
     setLessonFocus((previous) => {

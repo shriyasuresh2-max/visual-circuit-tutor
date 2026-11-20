@@ -1,7 +1,11 @@
-import { polarityOf, termKey } from './electricalGraph.js';
-import { parseDcValue } from './electricalValue.js';
+import { currentSourceDirection, normalizeLabel, polarityOf, termKey } from './electricalGraph.js';
+import { dcValueKind, parseDcValue } from './electricalValue.js';
 
-const DC_SOURCES = new Set(['battery', 'voltage_source']);
+const VALUE_REQUIREMENTS = {
+  resistance: 'a finite, positive resistance in ohms',
+  voltage: 'a finite voltage in volts',
+  current: 'a finite current in amperes',
+};
 const UNRESOLVED_DIAGNOSTICS = new Set([
   'conflicting-evidence', 'conflicting-terminal-assignment', 'declared-node-conflict',
   'junction-conflicts-with-evidence', 'junction-members-split', 'wire-trace-node-disagreement',
@@ -17,7 +21,7 @@ function failure(...issues) {
   return { ok: false, issues };
 }
 
-function readValue(component, isSource) {
+function readValue(component, kind) {
   const { status, value } = parseDcValue(component);
   const context = { componentId: component.id };
   if (status === 'missing-value') {
@@ -27,10 +31,11 @@ function readValue(component, isSource) {
   if (status !== 'ok') {
     const detail = status === 'missing-unit' ? 'The unit is missing. '
       : status === 'invalid-unit' ? 'The unit contains unreadable or unexpected characters. ' : '';
+    const correction = 'Check the printed value and enter it under Edit component values.';
     return {
       problem: issue(
-        isSource ? 'invalid-voltage' : 'invalid-resistance',
-        `${component.id} requires ${isSource ? 'a finite voltage in volts' : 'a finite, positive resistance in ohms'}. ${detail}Check the printed value and enter it under Edit component values.`,
+        `invalid-${kind}`,
+        `${component.id} requires ${VALUE_REQUIREMENTS[kind]}. ${detail}${correction}`,
         context,
       ),
     };
@@ -88,15 +93,15 @@ function validateNetwork(graph) {
       }
       if (key) usedTerminals.add(key);
     }
-    const isSource = DC_SOURCES.has(component.type);
-    if (!isSource && component.type !== 'resistor') {
+    const kind = dcValueKind(component.type);
+    if (!kind) {
       issues.push(issue('unsupported-component', `Component ${id} has unsupported type ${component.type}.`, { componentId: id }));
       continue;
     }
     if (!validTerminals) continue;
 
     let [from, to] = terminals;
-    if (isSource) {
+    if (kind === 'voltage') {
       if (polarityOf(to.label) === '+') [from, to] = [to, from];
       if (polarityOf(from.label) !== '+' || polarityOf(to.label) !== '-') {
         issues.push(issue('unknown-polarity', `Voltage source ${id} needs distinct positive and negative terminal labels.`,
@@ -104,12 +109,22 @@ function validateNetwork(graph) {
         continue;
       }
     }
-    const { value, problem } = readValue(component, isSource);
+    if (kind === 'current') {
+      const direction = currentSourceDirection(component);
+      if (!direction) {
+        issues.push(issue('unknown-current-direction', `Current source ${id} needs a reference direction between its two terminals. Confirm its arrow under Edit component values.`,
+          { componentId: id }));
+        continue;
+      }
+      [from, to] = [direction.fromTerminal, direction.toTerminal].map((label) =>
+        terminals.find((terminal) => normalizeLabel(terminal.label) === label));
+    }
+    const { value, problem } = readValue(component, kind);
     if (problem) {
       issues.push(problem);
       continue;
     }
-    branches.push({ id, type: component.type, isSource, from, to, value });
+    branches.push({ id, type: component.type, kind, from, to, value });
   }
   for (const [terminal, nodeId] of nodeOf) {
     if (!usedTerminals.has(terminal)) {
@@ -141,10 +156,17 @@ function stampNetwork(nodeIds, branches, sources, reference) {
   const index = new Map([...nodeIds].filter((id) => id !== reference).map((id, i) => [id, i]));
   const size = index.size + sources.length;
   const matrix = Array.from({ length: size }, () => new Float64Array(size + 1));
-  for (const { isSource, from, to, value } of branches) {
-    if (isSource || from.node === to.node) continue;
+  for (const { kind, from, to, value } of branches) {
+    if (kind === 'voltage' || from.node === to.node) continue;
     const a = index.get(from.node);
     const b = index.get(to.node);
+    if (kind === 'current') {
+      // KCL sums currents leaving a node. Move prescribed currents to the
+      // right-hand side: one leaves the arrow tail and enters the head.
+      if (a !== undefined) matrix[a][size] -= value;
+      if (b !== undefined) matrix[b][size] += value;
+      continue;
+    }
     const conductance = 1 / value;
     if (a !== undefined) matrix[a][a] += conductance;
     if (b !== undefined) matrix[b][b] += conductance;
@@ -232,11 +254,13 @@ function solveMatrix(matrix) {
 /**
  * Solve a complete electrical graph from buildGraph. Ignore all drawing data.
  *
- * Voltages are relative to referenceNodeId (default: the first DC source's
- * negative node, or the first graph node for a source-free network).
+ * Voltages are relative to referenceNodeId (default: the first voltage
+ * source's negative node, or the first graph node without a voltage source).
  * A branch reports V(fromNodeId) minus V(toNodeId). Current is positive when
  * it leaves the first node and enters the second through the component.
- * Resistors use terminal array order; sources use positive then negative.
+ * Resistors use terminal array order; voltage sources use positive then
+ * negative. Current sources use currentDirection: { fromTerminal, toTerminal }
+ * and report their prescribed signed current as sourceCurrent.
  * All results use volts, amperes and ohms. Failed solves return only issues.
  */
 export function solveDcCircuit(graph, { referenceNodeId } = {}) {
@@ -256,7 +280,7 @@ export function solveDcCircuit(graph, { referenceNodeId } = {}) {
   }
 
   if (issues.length) return failure(...issues);
-  const sources = branches.filter((branch) => branch.isSource);
+  const sources = branches.filter((branch) => branch.kind === 'voltage');
   const reference = referenceNodeId ?? sources[0]?.to.node ?? nodeIds.values().next().value;
   if (!nodeIds.has(reference)) {
     return failure(issue('invalid-reference', `Reference node ${reference} is not in the electrical graph.`, { nodeId: reference }));
@@ -271,11 +295,17 @@ export function solveDcCircuit(graph, { referenceNodeId } = {}) {
   const { solution, error } = solveMatrix(matrix);
   if (error) {
     const messages = {
-      'inconsistent-system': 'The source constraints are inconsistent. No solution satisfies all of them.',
-      'singular-system': 'The circuit has no unique solution. Redundant ideal sources or numerical rank loss can cause this.',
+      'inconsistent-system': 'The source constraints and current balances are inconsistent.',
+      'singular-system': 'The circuit has no unique solution. Possible causes include floating voltages, redundant voltage sources, or numerical rank loss.',
       'numerical-failure': 'The circuit could not be solved within floating-point limits.',
     };
-    return failure(issue(error, messages[error], { sourceIds: sources.map((source) => source.id) }));
+    // A path containing only an ideal current source does not fix relative
+    // voltage. Let elimination decide consistency before reporting floats.
+    const floating = unreachableNodes(nodeIds, branches.filter(({ kind }) => kind !== 'current'), reference);
+    return failure(issue(error, messages[error], {
+      sourceIds: branches.filter(({ kind }) => kind !== 'resistance').map(({ id }) => id),
+      ...(floating.length ? { nodeIds: floating } : {}),
+    }));
   }
 
   const nodes = new Map([...nodeIds].map((id) => [id, {
@@ -289,19 +319,20 @@ export function solveDcCircuit(graph, { referenceNodeId } = {}) {
   const roundingFactor = 16 * Number.EPSILON * Math.max(matrix.length, 1);
   const results = [];
   let maxSourceVoltageResidual = 0;
-  for (const { id, type, isSource, from, to, value } of branches) {
+  for (const { id, type, kind, from, to, value } of branches) {
     const a = nodes.get(from.node);
     const b = nodes.get(to.node);
     const voltage = a.voltage - b.voltage;
-    const current = isSource ? solution[sourceIndex.get(id)] : voltage / value;
-    const residual = isSource ? voltage - value : 0;
+    const isVoltage = kind === 'voltage';
+    const current = isVoltage ? solution[sourceIndex.get(id)] : kind === 'current' ? value : voltage / value;
+    const residual = isVoltage ? voltage - value : 0;
     const voltageScale = Math.max(Math.abs(a.voltage), Math.abs(b.voltage));
     const voltageTolerance = value === 0 ? roundingFactor * voltageScale : 1e-9 * Math.abs(value);
     if (!Number.isFinite(voltage) || !Number.isFinite(current) ||
-        (isSource && Math.abs(residual) > voltageTolerance)) {
+        (isVoltage && Math.abs(residual) > voltageTolerance)) {
       return failure(issue('numerical-failure', `The solution failed the branch equation for ${id}.`, { componentId: id }));
     }
-    if (!isSource && a !== b) {
+    if (kind === 'resistance' && a !== b) {
       // Near-equal node voltages can lose precision when subtracted. Bound
       // that cancellation error separately from the relative KCL tolerance.
       const errorBound = roundingFactor * voltageScale / value;
@@ -316,7 +347,8 @@ export function solveDcCircuit(graph, { referenceNodeId } = {}) {
       fromNodeId: from.node, toNodeId: to.node,
       fromTerminal: from.label, toTerminal: to.label,
       voltage, current,
-      ...(isSource ? { sourceVoltage: value, voltageResidual: residual } : { resistance: value }),
+      ...(isVoltage ? { sourceVoltage: value, voltageResidual: residual }
+        : kind === 'current' ? { sourceCurrent: value } : { resistance: value }),
     });
   }
 

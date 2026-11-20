@@ -1,0 +1,44 @@
+{
+  "contains_circuit": true,
+  "is_circuit": true,
+  "circuit_type": "parallel",
+  "components": [
+    {
+      "id": "I1",
+      "type": "current_source",
+      "visible_value": "2 mA",
+      "currentDirection": { "fromTerminal": " B ", "toTerminal": "A" },
+      "terminals": [
+        { "label": "A", "position": { "x": 0.2, "y": 0.36 } },
+        { "label": "B", "position": { "x": 0.2, "y": 0.64 } }
+      ],
+      "confidence": 0.99
+    },
+    {
+      "id": "V1",
+      "type": "voltage_source",
+      "visible_value": "3 V",
+      "terminals": [
+        { "label": "+", "position": { "x": 0.5, "y": 0.36 } },
+        { "label": "−", "position": { "x": 0.5, "y": 0.64 } }
+      ],
+      "confidence": 0.99
+    },
+    {
+      "id": "R1",
+      "type": "resistor",
+      "visible_value": "1 kohm",
+      "terminals": [
+        { "label": "A", "position": { "x": 0.8, "y": 0.36 } },
+        { "label": "B", "position": { "x": 0.8, "y": 0.64 } }
+      ],
+      "confidence": 0.99
+    }
+  ],
+  "nodes": [
+    { "id": "upper", "members": ["I1.A", "V1.+", "R1.A"] },
+    { "id": "lower", "members": ["I1.B", "V1.−", "R1.B"] }
+  ],
+  "image_width": 1000,
+  "image_height": 700
+}

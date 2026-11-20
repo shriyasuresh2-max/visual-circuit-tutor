@@ -34,7 +34,8 @@ function potential(id, equation) {
 
 function kcl(equation) {
   const terms = equation.terms.map((term, index) => {
-    const body = term.resistance == null ? current(term.branchId) : fraction(
+    const body = equation.substituted && term.sourceCurrent != null ? tex`\bigl(${quantity(term.sourceCurrent, 'A')}\bigr)`
+      : term.resistance == null ? current(term.branchId) : fraction(
       `${potential(term.fromNodeId, equation)} - ${potential(term.toNodeId, equation)}`,
       equation.substituted ? quantity(term.resistance, 'Ω') : resistance(term.branchId),
     );
@@ -54,6 +55,7 @@ function answer(equation) {
       break;
     case 'branch-current':
       name = current(id);
+      if (equation.sourceCurrent != null) return { result: `${name} = ${quantity(equation.sourceCurrent, 'A')}` };
       if (ohms != null) {
         formula = fraction(drop(id), resistance(id));
         substitution = fraction(quantity(Number(lessonNumber(branchVoltage)), 'V'), quantity(ohms, 'Ω'));

@@ -160,6 +160,7 @@ export function buildSavedCircuit(layout, savedAt = new Date().toISOString(), wi
       id: c.id,
       type: c.type,
       value: c.value ?? null,
+      ...(c.type === 'current_source' ? { currentDirection: c.currentDirection ?? null } : {}),
       confidence: c.confidence ?? null,
       status: c.status ?? null,
       notes: c.notes ?? null,

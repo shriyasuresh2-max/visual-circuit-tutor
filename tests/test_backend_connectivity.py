@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
-from backend.main import CircuitAnalysis, flag_connectivity_issues
+from backend.main import CircuitAnalysis, flag_connectivity_issues, validate_current_directions
 
 
 class ConnectivityReviewTests(unittest.TestCase):
@@ -44,6 +44,22 @@ class ConnectivityReviewTests(unittest.TestCase):
             {c["id"]: c["visible_value"] for c in capture["components"]},
         )
         self.assertFalse(result.reconstruction_incomplete)
+
+    def test_normalizes_visible_current_arrow_and_withholds_invalid_endpoints(self):
+        fixture = Path(__file__).parent / "fixtures" / "dc_current_source_analysis.json"
+        for tail, expected in [(" B ", {"fromTerminal": "B", "toTerminal": "A"}),
+                               ("A", None), ("unknown", None), (None, None)]:
+            with self.subTest(tail=tail):
+                result = CircuitAnalysis.model_validate_json(fixture.read_text(encoding="utf-8"))
+                source = result.components[0]
+                source.currentDirection.fromTerminal = tail
+                validate_current_directions(result)
+                flag_connectivity_issues(result)
+                self.assertEqual(source.visible_value, "2 mA")
+                self.assertEqual(source.currentDirection.model_dump() if source.currentDirection else None, expected)
+                self.assertFalse(result.reconstruction_incomplete)
+                if expected is None:
+                    self.assertIn("needs confirmation", source.notes)
 
     def test_preserves_all_three_corrupted_units_from_current_capture(self):
         fixture = Path(__file__).parent / "fixtures" / "combining_grave_resistance_analysis.json"

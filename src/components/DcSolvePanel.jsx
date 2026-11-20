@@ -4,8 +4,8 @@ import { valueDisplay } from '../circuit/componentValue.js';
 import { answerDcQuestion, parseDcQuestion } from '../circuit/dcQuestions.js';
 import { buildDcLesson } from '../circuit/dcLesson.js';
 import DcLessonSteps from './DcLessonSteps.jsx';
+import { dcValueKind } from '../circuit/electricalValue.js';
 
-const editableTypes = new Set(['resistor', 'battery', 'voltage_source']);
 
 function quantity(value, unit) {
   const magnitude = Math.abs(value);
@@ -74,7 +74,7 @@ function QuestionAnswer({ answer, result }) {
               <li key={componentId}>{componentId} ({fromTerminal} → {toTerminal}): {current(amps)}</li>
             ))}
           </ul>
-          <p>MNA solves source currents directly and uses I = ΔV ÷ R for resistors. Positive current follows the terminal arrow.</p>
+          <p>Current-source values are given. MNA solves voltage-source currents and uses I = ΔV ÷ R for resistors. Positive current follows the terminal arrow.</p>
         </>
       );
     case 'resistor-voltage': {
@@ -98,7 +98,9 @@ function QuestionAnswer({ answer, result }) {
       return (
         <>
           <strong>Current supplied by {branch.componentId}: {current(value)}</strong>
-          <p>MNA gives {current(branch.current)} into the positive terminal. Supplied current reverses that sign, so positive means the source delivers current from its positive terminal.</p>
+          {branch.sourceCurrent != null
+            ? <p>The source specifies this current. Positive follows its reference arrow, {branch.fromTerminal} → {branch.toTerminal}.</p>
+            : <p>MNA gives {current(branch.current)} into the positive terminal. Supplied current reverses that sign, so positive means the source delivers current from its positive terminal.</p>}
         </>
       );
     case 'branch-current':
@@ -107,6 +109,8 @@ function QuestionAnswer({ answer, result }) {
           <strong>Current through {branch.componentId}: {current(value)}</strong>
           {branch.resistance != null ? (
             <p>I = ΔV ÷ R = {quantity(branch.voltage, 'V')} ÷ {quantity(branch.resistance, 'Ω')}. Positive current flows {branch.fromTerminal} → {branch.toTerminal}.</p>
+          ) : branch.sourceCurrent != null ? (
+            <p>The source specifies this current. Positive follows its reference arrow, {branch.fromTerminal} → {branch.toTerminal}.</p>
           ) : (
             <p>MNA solves this source current directly. Positive current flows {branch.fromTerminal} → {branch.toTerminal} through the source.</p>
           )}
@@ -146,14 +150,37 @@ export default function DcSolvePanel({ graph, onApplyValues, questionText = '', 
   const result = useMemo(() => (
     solveVersion > 0 && !hasDraft ? solveDcCircuit(graph) : null
   ), [graph, solveVersion, hasDraft]);
-  const editable = graph.components.filter((component) => editableTypes.has(component.type));
+  const editable = graph.components.filter((component) => dcValueKind(component.type));
+
+  function updateDraft(id, field, next, original) {
+    setDraft((previous) => {
+      const updated = new Map(previous);
+      const edit = { ...updated.get(id) };
+      if (next === original) delete edit[field];
+      else edit[field] = next;
+      if (Object.keys(edit).length) updated.set(id, edit);
+      else updated.delete(id);
+      return updated;
+    });
+  }
 
   function handleSubmit(event) {
     event.preventDefault();
     if (hasDraft) {
-      const updates = new Map(editable
-        .filter((component) => draft.has(component.id))
-        .map(({ id }) => [id, draft.get(id).trim() || null]));
+      const updates = new Map();
+      for (const { id, terminals } of editable) {
+        const edit = draft.get(id);
+        if (!edit) continue;
+        const update = {};
+        if ('value' in edit) update.visible_value = edit.value.trim() || null;
+        if ('fromTerminal' in edit) {
+          const fromTerminal = edit.fromTerminal;
+          update.currentDirection = fromTerminal
+            ? { fromTerminal, toTerminal: terminals.find(({ label }) => label !== fromTerminal).label }
+            : null;
+        }
+        updates.set(id, update);
+      }
       onApplyValues(updates);
       setDraft(new Map());
     }
@@ -169,28 +196,37 @@ export default function DcSolvePanel({ graph, onApplyValues, questionText = '', 
         {editable.length > 0 && (
           <details className="dc-value-editor">
             <summary>Edit component values</summary>
-            <p>Enter a value with units, such as 220 Ω or 9 V, then choose Solve Circuit.</p>
+            <p>Enter a value with units, such as 220 Ω, 9 V, or 2 mA, then choose Solve Circuit.</p>
             {editable.map((component) => {
               const shown = valueDisplay(component);
               const value = shown.raw ?? shown.text ?? '';
+              const fromTerminal = component.currentDirection?.fromTerminal ?? '';
+              const edit = draft.get(component.id);
               return (
-                <label key={component.id}>
-                  {component.id}
-                  <input
-                    type="text"
-                    aria-invalid={shown.warning && !draft.has(component.id) ? true : undefined}
-                    value={draft.get(component.id) ?? value}
-                    onChange={(event) => {
-                      const next = event.target.value;
-                      setDraft((previous) => {
-                        const updated = new Map(previous);
-                        if (next === String(value)) updated.delete(component.id);
-                        else updated.set(component.id, next);
-                        return updated;
-                      });
-                    }}
-                  />
-                </label>
+                <React.Fragment key={component.id}>
+                  <label>
+                    {component.id}
+                    <input type="text"
+                      aria-invalid={shown.warning && edit?.value === undefined ? true : undefined}
+                      value={edit?.value ?? value}
+                      onChange={(event) => updateDraft(component.id, 'value', event.target.value, String(value))}
+                    />
+                  </label>
+                  {component.type === 'current_source' && component.terminals.length === 2 && (
+                    <label>
+                      {component.id} reference direction
+                      <select value={edit?.fromTerminal ?? fromTerminal}
+                        onChange={(event) => updateDraft(component.id, 'fromTerminal', event.target.value, fromTerminal)}>
+                        <option value="">Confirm arrow direction</option>
+                        {component.terminals.map(({ label }, index) => (
+                          <option key={label} value={label}>
+                            {label} ({component.terminals[index].node}) → {component.terminals[1 - index].label} ({component.terminals[1 - index].node})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                </React.Fragment>
               );
             })}
           </details>

@@ -60,3 +60,20 @@ export function applyComponentValues(analysis, overrides) {
     ),
   };
 }
+
+/** Apply reviewed values and arrow directions without changing any node evidence. */
+export function applyComponentEdits(analysis, edits) {
+  if (!analysis || edits.size === 0) return analysis;
+  return {
+    ...analysis,
+    components: analysis.components.map((component) => {
+      const edit = edits.get(component.id);
+      return edit ? {
+        ...component,
+        ...('visible_value' in edit ? { visible_value: edit.visible_value } : {}),
+        ...(component.type === 'current_source' && 'currentDirection' in edit
+          ? { currentDirection: edit.currentDirection } : {}),
+      } : component;
+    }),
+  };
+}

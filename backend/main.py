@@ -138,6 +138,11 @@ class Terminal(BaseModel):
     )
 
 
+class CurrentDirection(BaseModel):
+    fromTerminal: Optional[str] = Field(default=None, description="Terminal label at the visible arrow tail")
+    toTerminal: Optional[str] = Field(default=None, description="Terminal label at the visible arrow head")
+
+
 class Component(BaseModel):
     id: str = Field(description="Unique component identifier, e.g. 'R1', 'V1', 'SW1'")
     type: ComponentType
@@ -147,13 +152,18 @@ class Component(BaseModel):
             "Transcribe the printed number. For a clearly legible resistance "
             "unit use ASCII 'ohm', preserving any prefix and its case "
             "(e.g. '4 ohm', '2.2 kohm', '470 mohm'). Use 'V' for a legible "
-            "volt sign (e.g. '12 V'). If only the number is legible, return "
+            "volt sign (e.g. '12 V'). Use 'A' or 'mA' for a clearly legible "
+            "current unit and preserve any printed sign. If only the number is legible, return "
             "the number alone. Null if no number is legible."
         ),
     )
     terminals: List[Terminal] = Field(
         default_factory=list,
         description="The terminals of this component",
+    )
+    currentDirection: Optional[CurrentDirection] = Field(
+        default=None,
+        description="For an independent DC current source only, the visible arrow tail and head terminal labels. Null if uncertain.",
     )
     confidence: float = Field(
         ge=0.0,
@@ -335,6 +345,14 @@ Component recognition rules:
 - Batteries / ideal DC voltage sources: circle with +/− polarity marks, or
   multi-cell symbol with stacked horizontal lines → type "battery" or "voltage_source"
 - AC voltage sources: circle with a sine-wave symbol → type "ac_voltage_source"
+- Independent DC current sources: circle with an internal arrow → type "current_source".
+  Exclude AC and dependent sources. Use two distinct terminal labels "A" and "B".
+  Set currentDirection.fromTerminal to the terminal at the arrow tail and
+  currentDirection.toTerminal to the terminal at the arrow head. Read the
+  arrowhead on the symbol itself; do not infer it from position, terminal
+  order, wire geometry, or a printed current sign. Preserve the printed
+  signed value with "A" or "mA". If the arrow is unclear, leave
+  currentDirection null and describe the uncertainty in the component notes.
 - Current sources: circle with an arrow indicating current direction
 - Wires: lines connecting components → type "wire"
 - Switches: a gap or lever symbol in a conductor path
@@ -437,6 +455,23 @@ _USER_CONTENT = (
     "Report normalised coordinates where possible. Be precise and honest about "
     "anything unclear — mark uncertain detections rather than guessing."
 )
+
+
+def validate_current_directions(result: CircuitAnalysis) -> None:
+    """Withhold unresolved arrows without changing electrical connectivity."""
+    for component in result.components:
+        if component.type != ComponentType.current_source:
+            continue
+        direction = component.currentDirection
+        labels = {terminal.label.strip() for terminal in component.terminals}
+        tail = (direction.fromTerminal or "").strip() if direction else ""
+        head = (direction.toTerminal or "").strip() if direction else ""
+        if len(component.terminals) == 2 and tail and head and tail != head and {tail, head} == labels:
+            component.currentDirection = CurrentDirection(fromTerminal=tail, toTerminal=head)
+        else:
+            component.currentDirection = None
+            note = "Current source arrow direction needs confirmation."
+            component.notes = " ".join(filter(None, (component.notes, note)))
 
 
 def flag_connectivity_issues(result: CircuitAnalysis) -> None:
@@ -761,6 +796,7 @@ async def analyze_image(file: UploadFile = File(...)):
     if result.contains_circuit is None:
         result.contains_circuit = result.is_circuit
 
+    validate_current_directions(result)
     flag_connectivity_issues(result)
 
     # Optional diagnostic capture; a no-op unless GEMINI_DEBUG_DIR is set.

@@ -38,6 +38,9 @@ export function parseDcQuestion(text) {
       /^(?:general (?:dc |nodal )?analysis|(?:the )?circuit|(?:all )?node voltages and (?:all )?branch currents)$/i.test(prompt)) {
     return { kind: 'general', asked: true };
   }
+  if (/^current (?:supplied|delivered|provided) by (?:the )?current source$/i.test(prompt)) {
+    return { kind: 'source-supply', target: null, sourceType: 'current' };
+  }
   if (/^(?:source current|current (?:supplied|delivered|provided) by (?:the )?(?:(?:voltage )?source|battery))$/i.test(prompt)) {
     return { kind: 'source-supply', target: null };
   }
@@ -46,14 +49,17 @@ export function parseDcQuestion(text) {
     const match = prompt.match(pattern);
     if (!match) continue;
     const reference = match[1].replace(/^the\s+/i, '');
-    const label = reference.replace(/^(?:resistor|node|voltage source|source|battery)\s+/i, '');
+    const label = reference.replace(/^(?:resistor|node|voltage source|current source|source|battery)\s+/i, '');
     if (/\b(?:and|or)\b|[,/]/i.test(label)) {
       return { kind: 'unsupported', message: 'The question names multiple targets. Ask for one ID or for all node voltages or branch currents.' };
+    }
+    if (kind === 'source-supply' && /^current source$/i.test(reference)) {
+      return { kind, target: null, sourceType: 'current' };
     }
     if (kind === 'source-supply' && /^(?:(?:voltage )?source|battery)$/i.test(reference)) {
       return { kind, target: null };
     }
-    if (/^(?:resistor|node|voltage source|source|battery)$/i.test(label) || !ID.test(label)) break;
+    if (/^(?:resistor|node|voltage source|current source|source|battery)$/i.test(label) || !ID.test(label)) break;
     return { kind, target: label, resistorOnly: /^resistor\s/i.test(reference) };
   }
   return {
@@ -86,10 +92,12 @@ export function answerDcQuestion(intent, result) {
 
   let branch;
   if (intent.target == null) {
-    const sources = result.branches.filter((entry) => entry.sourceVoltage != null);
+    const sourceType = intent.sourceType === 'current' ? 'current' : 'voltage';
+    const sources = result.branches.filter((entry) => sourceType === 'current'
+      ? entry.sourceCurrent != null : entry.sourceVoltage != null);
     if (sources.length !== 1) return note(sources.length
-      ? 'More than one voltage source is present. Name the source ID.'
-      : 'No independent voltage source is present.');
+      ? `More than one ${sourceType} source is present. Name the source ID.`
+      : `No independent ${sourceType} source is present.`);
     [branch] = sources;
   } else {
     const match = findById(result.branches, intent.target, (entry) => entry.componentId, 'component');
@@ -97,16 +105,16 @@ export function answerDcQuestion(intent, result) {
     branch = match.item;
   }
 
-  if (intent.kind === 'source-supply' && branch.sourceVoltage == null) {
-    return note(`${branch.componentId} is a resistor. Name a voltage source to ask for supplied current.`);
+  if (intent.kind === 'source-supply' && branch.sourceVoltage == null && branch.sourceCurrent == null) {
+    return note(`${branch.componentId} is a resistor. Name a voltage source or current source to ask for supplied current.`);
   }
   if ((intent.resistorOnly || intent.kind.startsWith('resistor-')) && branch.resistance == null) {
-    return note(`${branch.componentId} is a voltage source. Name a resistor for this question.`);
+    return note(`${branch.componentId} is a ${branch.sourceCurrent != null ? 'current' : 'voltage'} source. Name a resistor for this question.`);
   }
 
   const value = {
     'branch-current': () => branch.current,
-    'source-supply': () => -branch.current,
+    'source-supply': () => branch.sourceCurrent ?? -branch.current,
     'resistor-voltage': () => branch.voltage,
     'resistor-power': () => branch.voltage * branch.current,
   }[intent.kind]();

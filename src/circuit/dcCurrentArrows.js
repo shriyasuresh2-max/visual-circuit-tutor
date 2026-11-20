@@ -1,5 +1,6 @@
 import { termKey } from './electricalGraph.js';
-import { nodeLabelBox } from './labelMetrics.js';
+import { segmentIntersectsBox } from './labelMetrics.js';
+import { placeNodeLabels } from './nodeLabels.js';
 
 const HALF_SHAFT = 8;
 const WIRE_OFFSET = 8;
@@ -37,28 +38,10 @@ function overlaps(a, b) {
   return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
 }
 
-function segmentIntersectsBox(a, b, box) {
-  let start = 0;
-  let end = 1;
-  for (const [coordinate, min, max] of [['x', box.minX, box.maxX], ['y', box.minY, box.maxY]]) {
-    const delta = b[coordinate] - a[coordinate];
-    if (delta === 0) {
-      if (a[coordinate] < min || a[coordinate] > max) return false;
-      continue;
-    }
-    const first = (min - a[coordinate]) / delta;
-    const last = (max - a[coordinate]) / delta;
-    start = Math.max(start, Math.min(first, last));
-    end = Math.min(end, Math.max(first, last));
-    if (start > end) return false;
-  }
-  return true;
-}
-
-function drawingObstacles(layout, wires) {
+function drawingObstacles(layout, wires, nodeLabels) {
   const junctions = layout.junctions ?? [];
   const boxes = layout.components.flatMap((component) => [component.drawBox ?? component.symbolBox, component.labelBox]).filter(Boolean);
-  boxes.push(...layout.nodes.map(nodeLabelBox));
+  boxes.push(...nodeLabels.flatMap(({ box, markerBox }) => [box, markerBox]));
   boxes.push(...junctions.map((junction) => around(junction, 8)));
   for (const crossing of layout.crossings ?? []) {
     const wire = wires.find(({ id }) => id === crossing.wireId);
@@ -217,11 +200,11 @@ function componentMarker(component, from, to, sign, label, obstacles, bounds) {
 }
 
 /** Place static labels on verified branch leads, with a body-side fallback. */
-export function placeDcCurrentArrows(layout, step, highlights) {
+export function placeDcCurrentArrows(layout, step, highlights, nodeLabels) {
   const mode = step?.currentArrowMode;
   if ((mode !== 'reference' && mode !== 'actual') || !highlights.active || layout.renderValidation?.isValid === false) return [];
   const wires = layout.allWires ?? layout.wires ?? [];
-  const obstacles = drawingObstacles(layout, wires);
+  const obstacles = drawingObstacles(layout, wires, nodeLabels ?? placeNodeLabels(layout));
   const components = new Map(layout.components.map((component) => [component.id, component]));
   const directions = step.currentDirections ?? [];
   const counts = new Map();

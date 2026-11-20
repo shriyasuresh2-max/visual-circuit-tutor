@@ -17,7 +17,8 @@ import {
 import { valueDisplay } from '../circuit/componentValue.js';
 import { mapLessonHighlights } from '../circuit/dcLessonHighlights.js';
 import { placeDcCurrentArrows } from '../circuit/dcCurrentArrows.js';
-import { LABEL_CARD, NODE_LABEL_FONT_SIZE, labelSize, nodeLabelPosition } from '../circuit/labelMetrics.js';
+import { LABEL_CARD, NODE_LABEL_FONT_SIZE, labelSize } from '../circuit/labelMetrics.js';
+import { placeNodeLabels } from '../circuit/nodeLabels.js';
 
 /**
  * Technical SVG Schematic of a DC Series Circuit
@@ -126,7 +127,12 @@ function ComponentSymbol({ comp, selected, highlighted = false, dimmed = false }
   // All geometry comes from the layout engine: rotation, symbol extent and the
   // terminal points. The renderer never re-derives them, so the drawn symbol,
   // its leads, and the wire endpoints cannot disagree.
-  const angle = comp.angle ?? (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
+  const terminalAngle = (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
+  const angle = type === 'current_source' ? terminalAngle : comp.angle ?? terminalAngle;
+  const currentArrow = comp.currentDirection && {
+    ...comp.currentDirection,
+    reversed: comp.currentDirection.fromTerminal === comp.terminals[1].label,
+  };
   const symbolHalf = comp.symbolHalf ?? 26;
   // Along-axis compression of the glyph (1 = the type's design length). It is
   // applied to the symbol's length only: the height, the stroke weight and the
@@ -201,7 +207,7 @@ function ComponentSymbol({ comp, selected, highlighted = false, dimmed = false }
 
       {/* symbol */}
       <g opacity={symbolOpacity} transform={`translate(${mx} ${my}) rotate(${angle}) scale(${symbolScale} 1)`}>
-        {renderSymbol(type, color, aIsPos, bIsPos)}
+        {renderSymbol(type, color, aIsPos, bIsPos, currentArrow)}
       </g>
 
       {/* collision-free label card */}
@@ -238,7 +244,7 @@ function ComponentSymbol({ comp, selected, highlighted = false, dimmed = false }
 }
 
 /** Returns SVG for a component symbol in local coordinates (origin-centered, along +x). */
-function renderSymbol(type, color, aIsPos, bIsPos) {
+function renderSymbol(type, color, aIsPos, bIsPos, currentArrow) {
   switch (type) {
     case 'resistor':
       return (
@@ -275,7 +281,13 @@ function renderSymbol(type, color, aIsPos, bIsPos) {
       return (
         <g>
           <circle cx="0" cy="0" r="18" fill="none" stroke={color} strokeWidth="2.5" />
-          <path d="M -8 0 L 8 0 M 4 -4 L 8 0 L 4 4" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+          {currentArrow ? (
+            <path aria-label={`Reference arrow ${currentArrow.fromTerminal} to ${currentArrow.toTerminal}`}
+              data-source-arrow={currentArrow.reversed ? 'reverse' : 'forward'}
+              transform={currentArrow.reversed ? 'rotate(180)' : undefined}
+              d="M -8 0 L 8 0 M 4 -4 L 8 0 L 4 4" fill="none" stroke={color} strokeWidth="2.5"
+              strokeLinecap="round" strokeLinejoin="round" />
+          ) : <text textAnchor="middle" dominantBaseline="central" fill={color}>?</text>}
         </g>
       );
 
@@ -419,6 +431,7 @@ function ReconstructedDiagram({
   const dragRef = useRef({ mode: 'none', x: 0, y: 0, ox: 0, oy: 0, compId: null, nodeId: null, startCenter: null, startNode: null });
   const svgRef = useRef(null);
   const viewportRef = useRef(null);
+  const [nodeFontSize, setNodeFontSize] = useState(NODE_LABEL_FONT_SIZE);
 
   // --- Apply visual edits (component move/rotate + node move) and re-route wires ---
   const editedLayout = useMemo(() => {
@@ -438,9 +451,22 @@ function ReconstructedDiagram({
     () => mapLessonHighlights(electricalGraph, editedLayout, lessonStep),
     [electricalGraph, editedLayout, lessonStep],
   );
+  const labelBounds = editedLayout?.ok ? editedLayout.bounds : null;
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg || !labelBounds || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(([{ contentRect }]) => {
+      const scale = Math.min(contentRect.width / labelBounds.width, contentRect.height / labelBounds.height);
+      if (scale > 0) setNodeFontSize(Math.max(NODE_LABEL_FONT_SIZE, Math.min(24, Math.ceil(9 / scale))));
+    });
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, [labelBounds]);
+  const nodeLabels = useMemo(() => editedLayout?.ok ? placeNodeLabels(editedLayout, nodeFontSize) : [],
+    [editedLayout, nodeFontSize]);
   const currentArrows = useMemo(
-    () => placeDcCurrentArrows(editedLayout, lessonStep, lessonHighlights),
-    [editedLayout, lessonStep, lessonHighlights],
+    () => placeDcCurrentArrows(editedLayout, lessonStep, lessonHighlights, nodeLabels),
+    [editedLayout, lessonStep, lessonHighlights, nodeLabels],
   );
 
   // --- Edit / Save mode --------------------------------------------------
@@ -1037,14 +1063,20 @@ function ReconstructedDiagram({
           })}
 
           {/* Node labels */}
-          {nodes.map((n) => {
-            const role = lessonHighlights.nodes.get(n.id);
+          {nodeLabels.map(({ nodeId, anchor, box }) => {
+            const role = lessonHighlights.nodes.get(nodeId);
+            const color = LESSON_NODE_COLORS[role] ?? '#a5b4fc';
             return (
-              <text key={`nl-${n.id}`} {...nodeLabelPosition(n)} data-lesson-node-id={n.id}
-                data-lesson-highlight={role} fill={LESSON_NODE_COLORS[role] ?? '#475569'}
-                fontWeight={role ? 700 : undefined} fontSize={NODE_LABEL_FONT_SIZE} fontFamily="var(--font-mono)">
-                {n.id}
-              </text>
+              <g key={nodeId} pointerEvents="none" data-node-label={nodeId} data-node-anchor-kind={anchor.kind}>
+                {!anchor.junctionId && (
+                  <circle cx={anchor.x} cy={anchor.y} r={role ? 4 : 3} fill={color} stroke="#0c111a" strokeWidth="1" />
+                )}
+                <text x={box.minX} y={(box.minY + box.maxY) / 2} dominantBaseline="central"
+                  data-lesson-node-id={nodeId} data-lesson-highlight={role} fill={color}
+                  fontWeight={role ? 700 : 500} fontSize={nodeFontSize} fontFamily="var(--font-mono)">
+                  {nodeId}
+                </text>
+              </g>
             );
           })}
 

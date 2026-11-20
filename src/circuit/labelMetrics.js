@@ -26,7 +26,28 @@ export const LABEL_CARD = {
   edgeGap: 6,
 };
 
-export const NODE_LABEL_FONT_SIZE = 9;
+export const NODE_LABEL_FONT_SIZE = 11;
+
+/** Exact intersection against an axis-aligned box, including diagonal runs. */
+export function segmentIntersectsBox(a, b, box, padding = 0) {
+  let start = 0;
+  let end = 1;
+  for (const [coordinate, low, high] of [['x', box.minX, box.maxX], ['y', box.minY, box.maxY]]) {
+    const min = low - padding;
+    const max = high + padding;
+    const delta = b[coordinate] - a[coordinate];
+    if (delta === 0) {
+      if (a[coordinate] < min || a[coordinate] > max) return false;
+      continue;
+    }
+    const first = (min - a[coordinate]) / delta;
+    const last = (max - a[coordinate]) / delta;
+    start = Math.max(start, Math.min(first, last));
+    end = Math.min(end, Math.max(first, last));
+    if (start > end) return false;
+  }
+  return true;
+}
 
 export function nodeLabelPosition(node) {
   return { x: node.x + 8, y: node.y - 8 };

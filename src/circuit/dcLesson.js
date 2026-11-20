@@ -1,5 +1,5 @@
 import { answerDcQuestion } from './dcQuestions.js';
-import { termKey } from './electricalGraph.js';
+import { currentSourceDirection, termKey } from './electricalGraph.js';
 import { lessonNumber as displayed } from './dcLessonMath.js';
 
 const voltage = (id) => `V[${id}]`;
@@ -23,6 +23,10 @@ function matchesGraph(graph, result) {
   return nodes.has(result.referenceNodeId) && result.nodes.every((node) => nodes.has(node.id)) &&
     result.branches.every((branch) => {
       const component = components.get(branch.componentId);
+      if (branch.sourceCurrent != null) {
+        const arrow = component && currentSourceDirection(component);
+        if (arrow?.fromTerminal !== branch.fromTerminal || arrow?.toTerminal !== branch.toTerminal) return false;
+      }
       return component?.type === branch.type && [
         [branch.fromTerminal, branch.fromNodeId], [branch.toTerminal, branch.toNodeId],
       ].every(([label, nodeId]) =>
@@ -37,7 +41,7 @@ function kclRows(nodes, branches, reference) {
   const termsByNode = new Map(nodes.map(({ id }) => [id, []]));
   for (const branch of branches) {
     if (branch.fromNodeId === branch.toNodeId) continue;
-    const term = { ...direction(branch), resistance: branch.resistance ?? null };
+    const term = { ...direction(branch), resistance: branch.resistance ?? null, sourceCurrent: branch.sourceCurrent };
     termsByNode.get(branch.fromNodeId).push({ ...term, sign: 1 });
     termsByNode.get(branch.toNodeId).push({ ...term, sign: -1 });
   }
@@ -47,7 +51,8 @@ function kclRows(nodes, branches, reference) {
 function kclEquation(row, reference, substituted) {
   const potential = (id) => substituted && id === reference ? '0 V' : voltage(id);
   const expression = row.terms.map((term, i) => {
-    const body = term.resistance == null ? current(term.branchId) :
+    const body = substituted && term.sourceCurrent != null ? `(${term.sourceCurrent} A)`
+      : term.resistance == null ? current(term.branchId) :
       `(${potential(term.fromNodeId)} − ${potential(term.toNodeId)}) / ${substituted ? `(${term.resistance} Ω)` : `R[${term.branchId}]`}`;
     return term.sign < 0 ? `${i ? ' − ' : '−'}${body}` : `${i ? ' + ' : ''}${body}`;
   }).join('') || '0 A';
@@ -68,7 +73,7 @@ function resultEntry(kind, id, value, unit, label, expression, branch = null) {
     kind, id, value, unit, label, expression,
     ...(branch ? {
       direction: direction(branch), resistance: branch.resistance,
-      branchVoltage: branch.voltage, branchCurrent: branch.current,
+      branchVoltage: branch.voltage, branchCurrent: branch.current, sourceCurrent: branch.sourceCurrent,
     } : {}),
   };
 }
@@ -85,9 +90,11 @@ function branchEntry(branch, kind, value) {
   switch (kind) {
     case 'branch-current':
       return resultEntry(kind, id, value, 'A', i,
-        branch.resistance == null ? `${i} ≈ ${displayed(value)} A`
+        branch.sourceCurrent != null ? `${i} = ${value} A`
+          : branch.resistance == null ? `${i} ≈ ${displayed(value)} A`
           : `${i} = ${drop} / R[${id}] ≈ ${volts(displayed(branch.voltage))} / (${branch.resistance} Ω) ≈ ${displayed(value)} A`, branch);
     case 'source-supply':
+      if (branch.sourceCurrent != null) return branchEntry(branch, 'branch-current', value);
       return {
         ...resultEntry(kind, id, value, 'A', `Supplied current from ${id}`,
           `I_supplied[${id}] = −${i} ≈ −(${displayed(branch.current)} A) ≈ ${displayed(value)} A`, branch),
@@ -132,6 +139,7 @@ export function buildDcLesson(graph, result, intent) {
 
   const { nodes, branches, referenceNodeId: reference } = result;
   const sources = branches.filter((branch) => branch.sourceVoltage != null);
+  const currentSources = branches.filter((branch) => branch.sourceCurrent != null);
   const unknowns = nodes.filter((node) => node.id !== reference);
   const rows = kclRows(nodes, branches, reference);
   const allNodes = nodes.map(({ id }) => id);
@@ -165,7 +173,7 @@ export function buildDcLesson(graph, result, intent) {
           : roundoff * Math.max(...endpoints(branch).map((node) => Math.abs(potentials.get(node)))) / branch.resistance;
         return {
           ...arrow, signedCurrent: sign * branch.current,
-          effectivelyZero: Math.abs(branch.current) <= noise,
+          effectivelyZero: branch.sourceCurrent != null ? branch.sourceCurrent === 0 : Math.abs(branch.current) <= noise,
         };
       }) : directions,
       ...(finalAnswer ? { finalAnswer } : {}),
@@ -186,13 +194,19 @@ export function buildDcLesson(graph, result, intent) {
       ...sources.map((branch) => ({ kind: 'unknown-current', branchId: branch.componentId, expression: `${current(branch.componentId)} is unknown` }))],
     allNodes, sources);
   add('directions', 'Set current reference directions',
-    'Give each current an arrow so we can keep track of its sign. A negative answer means the current flows the other way; the source’s reference arrow enters its positive terminal.',
+    currentSources.length
+      ? 'For current sources, use the declared reference arrows. A negative specified current flows against its arrow.'
+        + (sources.length ? ' A voltage source’s reference current enters its positive terminal.' : '')
+      : 'Give each current an arrow so we can keep track of its sign. A negative answer means the current flows the other way; the source’s reference arrow enters its positive terminal.',
     branches.map((branch) => ({ kind: 'current-direction', ...direction(branch),
       expression: `${current(branch.componentId)}: ${branch.fromNodeId} (${branch.fromTerminal}) → ${branch.toNodeId} (${branch.toTerminal})` })),
     allNodes, branches);
   if (rows.length) {
     add('kcl', 'Apply Kirchhoff’s current law',
-      'What flows into each node must flow out, so the signed sum of currents leaving is zero. Use Ohm’s law for resistors and leave voltage-source currents as unknowns.',
+      'What flows into each node must flow out, so the signed sum of currents leaving is zero. '
+        + (currentSources.length ? 'Add the given current at the reference arrow’s tail and subtract it at the head. ' : '')
+        + 'Use Ohm’s law for resistors.'
+        + (sources.length ? ' Leave voltage-source currents as unknowns.' : ''),
       rows.map((row) => kclEquation(row, reference, false)), allNodes, branches);
   }
   if (sources.length) {
@@ -202,24 +216,29 @@ export function buildDcLesson(graph, result, intent) {
   }
   if (rows.length || sources.length) {
     add('substitute', 'Substitute known values',
-      'Put the known resistances and source voltages into the equations. Use 0 V wherever the reference node appears.',
+      'Put the known component values into the equations. Use 0 V wherever the reference node appears.',
       [...rows.map((row) => kclEquation(row, reference, true)),
         ...sources.map((source) => sourceConstraint(source, reference, true))], allNodes, branches);
   }
   add('solve', 'Solve the simultaneous equations',
-    'Solve the current-balance and source equations together because they share unknowns. The resulting voltage drops let us calculate the resistor currents.',
-    [...nodes.map(nodeEntry), ...sources.map((branch) => branchEntry(branch, 'branch-current', branch.current))],
+    (sources.length ? 'Solve the current-balance and voltage-source equations together. ' : 'Solve the current-balance equations for the node voltages. ')
+      + 'The resulting voltage drops let us calculate the resistor currents.',
+    [...nodes.map(nodeEntry), ...[...sources, ...currentSources].map((branch) => branchEntry(branch, 'branch-current', branch.current))],
     allNodes, branches);
   const answerPresentation = {
-    'branch-current': [`Calculate current through ${answer.branch?.componentId}`, answer.branch?.resistance == null
+    'branch-current': [`Calculate current through ${answer.branch?.componentId}`, answer.branch?.sourceCurrent != null
+      ? 'Use the specified signed current. Positive follows the source’s reference arrow.'
+      : answer.branch?.resistance == null
       ? 'Use the source current found by solving the equations. Its sign follows the reference arrow.'
       : 'Divide the resistor’s voltage drop by its resistance. The sign tells you whether the current follows the reference arrow.'],
-    'source-supply': ['Find the current supplied', 'Report current leaving the positive terminal. That reverses the sign of the source current in the equations.'],
+    'source-supply': ['Find the current supplied', answer.branch?.sourceCurrent != null
+      ? 'Use the specified signed current in the direction of the source’s reference arrow.'
+      : 'Report current leaving the positive terminal. That reverses the sign of the source current in the equations.'],
     'resistor-voltage': [`Find the voltage across ${answer.branch?.componentId}`, 'Subtract the voltage at the second terminal from the first to get the voltage drop.'],
     'resistor-power': [`Calculate power dissipated by ${answer.branch?.componentId}`, 'Multiply the resistor’s voltage drop by its current to find the power it dissipates.'],
     'node-voltage': ['Read the node voltage', 'Use the voltage found by solving the equations. It is measured from the reference node.'],
     'node-voltages': ['Read the node voltages', 'Read each solved voltage relative to the reference node at 0 V.'],
-    'branch-currents': ['Find the branch currents', 'Use the solved currents for the sources and Ohm’s law for resistors. A negative current flows against its reference arrow.'],
+    'branch-currents': ['Find the branch currents', 'Use the specified currents for current sources, the solved currents for voltage sources, and Ohm’s law for resistors. A negative current flows against its reference arrow.'],
     general: ['Read the circuit solution', 'Read the node voltages relative to 0 V. Use the voltage drops to find resistor currents, with signs measured against the reference arrows.'],
   };
   const [answerTitle, answerExplanation] = answerPresentation[answer.kind];

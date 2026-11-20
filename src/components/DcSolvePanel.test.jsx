@@ -2,7 +2,8 @@ import React from 'react';
 import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { applyComponentValues } from '../circuit/componentValue.js';
+import { applyComponentEdits, applyComponentValues } from '../circuit/componentValue.js';
+import currentSourceAnalysis from '../../tests/fixtures/dc_current_source_analysis.json';
 import { buildGraph } from '../circuit/electricalGraph.js';
 import { layoutCircuit } from '../circuit/circuitLayout.js';
 import { solveDcCircuit } from '../circuit/dcSolver.js';
@@ -31,6 +32,77 @@ function renderSolution(graph, questionText = '') {
 }
 
 describe('reconstructed circuit solver panel', () => {
+  it('renders one noninteractive node label per node and reuses physical junction markers', () => {
+    const graph = buildGraph(currentSourceAnalysis);
+    const markup = renderToStaticMarkup(
+      <CircuitDiagram analysisResult={currentSourceAnalysis} electricalGraph={graph} />,
+    );
+    expect(markup.match(/data-node-label=/g)).toHaveLength(graph.nodes.length);
+    expect(markup.match(/pointer-events="none" data-node-label="N\d+" data-node-anchor-kind="junction"><text/g))
+      .toHaveLength(graph.nodes.length);
+  });
+
+  it('renders a verified reference arrow along vertical and horizontal source terminals', () => {
+    const horizontal = {
+      ...currentSourceAnalysis,
+      components: currentSourceAnalysis.components.map((component) => ({
+        ...component,
+        terminals: component.terminals.map(({ label, position }) => ({
+          label, position: { x: position.y, y: position.x },
+        })),
+      })),
+    };
+    for (const [capture, angle] of [[currentSourceAnalysis, 90], [horizontal, 0]]) {
+      const graph = buildGraph(capture);
+      const layout = layoutCircuit(capture, graph);
+      expect(layout.components.find(({ id }) => id === 'I1').angle).toBeCloseTo(angle);
+      const svg = renderToStaticMarkup(<CircuitDiagram analysisResult={capture} electricalGraph={graph} />);
+      expect(svg).toContain('aria-label="Reference arrow B to A" data-source-arrow="reverse" transform="rotate(180)"');
+      expect(svg).toContain('2 mA');
+    }
+  });
+
+  it('requires confirmation for missing or invalid directions and applies edits without changing nets', () => {
+    const ambiguous = applyComponentEdits(currentSourceAnalysis, new Map([['I1', {
+      currentDirection: { fromTerminal: 'Z', toTerminal: 'A' },
+    }]]));
+    const incomplete = buildGraph(ambiguous);
+    expect(incomplete.components[0].currentDirection).toBeNull();
+    const failed = solveDcCircuit(incomplete);
+    expect(failed.issues[0].code).toBe('unknown-current-direction');
+    expect(renderToStaticMarkup(<CircuitDiagram analysisResult={ambiguous} electricalGraph={incomplete} />))
+      .not.toContain('data-source-arrow=');
+    expect(renderToStaticMarkup(<DcSolvePanel graph={incomplete} />)).toContain('Confirm arrow direction');
+    const edited = applyComponentEdits(ambiguous, new Map([['I1', {
+      visible_value: '−1 mA', currentDirection: { fromTerminal: 'A', toTerminal: 'B' },
+    }]]));
+    const graph = buildGraph(edited);
+    expect(graph.nodes).toEqual(incomplete.nodes);
+    expect(solveDcCircuit(graph).branches[0]).toMatchObject({
+      fromTerminal: 'A', toTerminal: 'B', sourceCurrent: -0.001, current: -0.001, voltage: 3,
+    });
+  });
+
+  it('substitutes signed known current, highlights its branch, and skips zero current animation', () => {
+    for (const [value, amps] of [['−2 mA', -0.002], ['0 A', 0]]) {
+      const capture = applyComponentValues(currentSourceAnalysis, new Map([['I1', value]]));
+      const graph = buildGraph(capture);
+      const result = solveDcCircuit(graph);
+      const lesson = buildDcLesson(graph, result, parseDcQuestion('Current supplied by current source I1'));
+      const index = lesson.steps.findIndex(({ id }) => id === 'substitute');
+      const equation = lesson.steps[index].equations.find(({ kind }) => kind === 'kcl');
+      expect(equation.terms.find(({ branchId }) => branchId === 'I1')).toMatchObject({ sign: -1, sourceCurrent: amps });
+      const markup = renderToStaticMarkup(<DcLessonStepView lesson={lesson} index={index} />);
+      expect(markup).toContain(`- \\bigl(${amps}\\,\\mathrm{A}\\bigr)`);
+      const final = lesson.steps.at(-1);
+      expect(final.finalAnswer[0]).toMatchObject({ sourceCurrent: amps, value: amps });
+      const svg = renderToStaticMarkup(<CircuitDiagram analysisResult={capture} electricalGraph={graph} lessonStep={final} />);
+      expect(svg).toContain('data-comp-id="I1" data-lesson-highlight="component"');
+      if (amps === 0) expect(svg).not.toContain('data-current-flow-branch-id="I1"');
+      else expect(svg).toContain('I1 actual current from A to B');
+    }
+  });
+
   it('renders a non-interactive arrow overlay for the current lesson mode only', () => {
     const graph = buildGraph(analysis);
     const result = solveDcCircuit(graph);
