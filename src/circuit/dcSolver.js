@@ -1,4 +1,4 @@
-import { currentSourceDirection, normalizeLabel, polarityOf, termKey } from './electricalGraph.js';
+import { currentSourceDirection, groundTerminalKeys, normalizeLabel, polarityOf, termKey } from './electricalGraph.js';
 import { dcValueKind, parseDcValue } from './electricalValue.js';
 
 const VALUE_REQUIREMENTS = {
@@ -45,6 +45,7 @@ function readValue(component, kind) {
 
 function validateNetwork(graph) {
   const issues = [];
+  const grounds = groundTerminalKeys(graph.components);
   const nodeIds = new Set();
   const nodeOf = new Map();
   for (const node of graph.nodes) {
@@ -54,10 +55,11 @@ function validateNetwork(graph) {
       continue;
     }
     nodeIds.add(id);
-    if (node.members.length === 0) {
+    const electrical = node.members.filter((key) => !grounds.has(key));
+    if (electrical.length === 0) {
       issues.push(issue('floating-node', `Node ${id} has no terminals.`, { nodeId: id }));
-    } else if (node.members.length === 1) {
-      issues.push(issue('open-terminal', `Node ${id} has only terminal ${node.members[0]}.`, { nodeId: id }));
+    } else if (electrical.length === 1) {
+      issues.push(issue('open-terminal', `Node ${id} has only terminal ${electrical[0]}.`, { nodeId: id }));
     }
     for (const key of node.members) {
       if (typeof key !== 'string' || !key || nodeOf.has(key)) {
@@ -79,8 +81,9 @@ function validateNetwork(graph) {
     }
     componentIds.add(id);
     const terminals = component.terminals;
-    if (!Array.isArray(terminals) || terminals.length !== 2) {
-      issues.push(issue('invalid-terminals', `Component ${id} must declare two terminals.`, { componentId: id }));
+    const ground = component.type === 'ground';
+    if (!Array.isArray(terminals) || terminals.length !== (ground ? 1 : 2)) {
+      issues.push(issue('invalid-terminals', `Component ${id} must declare ${ground ? 'one terminal' : 'two terminals'}.`, { componentId: id }));
       continue;
     }
     let validTerminals = true;
@@ -93,6 +96,7 @@ function validateNetwork(graph) {
       }
       if (key) usedTerminals.add(key);
     }
+    if (ground) continue;
     const kind = dcValueKind(component.type);
     if (!kind) {
       issues.push(issue('unsupported-component', `Component ${id} has unsupported type ${component.type}.`, { componentId: id }));
@@ -193,7 +197,7 @@ function stampNetwork(nodeIds, branches, sources, reference) {
 }
 
 /** Equilibrated Gaussian elimination with deterministic partial pivoting. */
-function solveMatrix(matrix) {
+export function solveMatrix(matrix) {
   const n = matrix.length;
   const tolerance = 16 * Number.EPSILON * Math.max(n, 1);
   const rhsMagnitude = [];
@@ -251,19 +255,8 @@ function solveMatrix(matrix) {
   return solution.every(Number.isFinite) ? { solution } : { error: 'numerical-failure' };
 }
 
-/**
- * Solve a complete electrical graph from buildGraph. Ignore all drawing data.
- *
- * Voltages are relative to referenceNodeId (default: the first voltage
- * source's negative node, or the first graph node without a voltage source).
- * A branch reports V(fromNodeId) minus V(toNodeId). Current is positive when
- * it leaves the first node and enters the second through the component.
- * Resistors use terminal array order; voltage sources use positive then
- * negative. Current sources use currentDirection: { fromTerminal, toTerminal }
- * and report their prescribed signed current as sourceCurrent.
- * All results use volts, amperes and ohms. Failed solves return only issues.
- */
-export function solveDcCircuit(graph, { referenceNodeId } = {}) {
+/** Shared graph validation and terminal orientation for DC analysis methods. */
+export function prepareDcNetwork(graph) {
   if (!Array.isArray(graph?.nodes) || graph.nodes.length === 0 ||
       !Array.isArray(graph?.components) || graph.components.length === 0) {
     return failure(issue('invalid-graph', 'The solver needs an electrical graph with components and nodes.'));
@@ -280,8 +273,27 @@ export function solveDcCircuit(graph, { referenceNodeId } = {}) {
   }
 
   if (issues.length) return failure(...issues);
+  return { ok: true, nodeIds, branches };
+}
+
+/**
+ * Solve a complete electrical graph from buildGraph. Ignore all drawing data.
+ *
+ * Voltages are relative to referenceNodeId (default: the first voltage
+ * source's negative node, or the first graph node without a voltage source).
+ * A branch reports V(fromNodeId) minus V(toNodeId). Current is positive when
+ * it leaves the first node and enters the second through the component.
+ * Resistors use terminal array order; voltage sources use positive then
+ * negative. Current sources use currentDirection: { fromTerminal, toTerminal }
+ * and report their prescribed signed current as sourceCurrent.
+ * All results use volts, amperes and ohms. Failed solves return only issues.
+ */
+export function solveDcCircuit(graph, { referenceNodeId } = {}) {
+  const network = prepareDcNetwork(graph);
+  if (!network.ok) return network;
+  const { nodeIds, branches } = network;
   const sources = branches.filter((branch) => branch.kind === 'voltage');
-  const reference = referenceNodeId ?? sources[0]?.to.node ?? nodeIds.values().next().value;
+  const reference = referenceNodeId ?? graph.referenceNodeId ?? sources[0]?.to.node ?? nodeIds.values().next().value;
   if (!nodeIds.has(reference)) {
     return failure(issue('invalid-reference', `Reference node ${reference} is not in the electrical graph.`, { nodeId: reference }));
   }
@@ -317,6 +329,7 @@ export function solveDcCircuit(graph, { referenceNodeId } = {}) {
   const sourceIndex = new Map(sources.map((source, i) => [source.id, index.size + i]));
   const currentRoundoff = new Map([...nodeIds].map((id) => [id, 0]));
   const roundingFactor = 16 * Number.EPSILON * Math.max(matrix.length, 1);
+  const networkVoltageScale = [...nodes.values()].reduce((max, node) => Math.max(max, Math.abs(node.voltage)), 0);
   const results = [];
   let maxSourceVoltageResidual = 0;
   for (const { id, type, kind, from, to, value } of branches) {
@@ -327,7 +340,9 @@ export function solveDcCircuit(graph, { referenceNodeId } = {}) {
     const current = isVoltage ? solution[sourceIndex.get(id)] : kind === 'current' ? value : voltage / value;
     const residual = isVoltage ? voltage - value : 0;
     const voltageScale = Math.max(Math.abs(a.voltage), Math.abs(b.voltage));
-    const voltageTolerance = value === 0 ? roundingFactor * voltageScale : 1e-9 * Math.abs(value);
+    // Elimination can leave a roundoff-sized potential at a short to ground
+    // even when both terminal voltages should be exactly zero.
+    const voltageTolerance = value === 0 ? roundingFactor * networkVoltageScale : 1e-9 * Math.abs(value);
     if (!Number.isFinite(voltage) || !Number.isFinite(current) ||
         (isVoltage && Math.abs(residual) > voltageTolerance)) {
       return failure(issue('numerical-failure', `The solution failed the branch equation for ${id}.`, { componentId: id }));

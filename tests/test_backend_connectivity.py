@@ -23,6 +23,21 @@ class ConnectivityReviewTests(unittest.TestCase):
         flag_connectivity_issues(self.result)
         self.assertTrue(self.result.reconstruction_incomplete)
 
+    def test_ground_preserves_single_terminal_and_rejects_extra_terminal(self):
+        fixture = Path(__file__).parent / "fixtures" / "sample_extracted_analysis.json"
+        data = json.loads(fixture.read_text(encoding="utf-8"))
+        data["components"].append({"id": "G1", "type": "ground", "confidence": 1, "terminals": [{"label": "A"}]})
+        data["nodes"][0]["members"].append("G1.A")
+        result = CircuitAnalysis.model_validate(data)
+        flag_connectivity_issues(result)
+        self.assertFalse(result.reconstruction_incomplete)
+        self.assertEqual([terminal.label for terminal in result.components[-1].terminals], ["A"])
+        data["components"][-1]["terminals"].append({"label": "B"})
+        invalid = CircuitAnalysis.model_validate(data)
+        flag_connectivity_issues(invalid)
+        self.assertTrue(invalid.reconstruction_incomplete)
+        self.assertIn("Ground marker G1 must have one conductor terminal.", invalid.unclear_details)
+
     def test_trace_errors_remain_blocking(self):
         self.result.wires[0].points = []
         flag_connectivity_issues(self.result)

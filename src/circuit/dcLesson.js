@@ -1,6 +1,7 @@
 import { answerDcQuestion } from './dcQuestions.js';
 import { currentSourceDirection, termKey } from './electricalGraph.js';
 import { lessonNumber as displayed } from './dcLessonMath.js';
+import { nodalPotentials, traceNodalAlgebra } from './dcNodalAlgebra.js';
 
 const voltage = (id) => `V[${id}]`;
 const current = (id) => `I[${id}]`;
@@ -13,11 +14,15 @@ function direction(branch) {
   return { branchId: componentId, componentId, fromNodeId, toNodeId, fromTerminal, toTerminal };
 }
 
+const kclTerm = (branch) => ({
+  ...direction(branch), resistance: branch.resistance ?? null, sourceCurrent: branch.sourceCurrent,
+});
+
 function matchesGraph(graph, result) {
   if (graph?.incomplete || graph?.reconstruction_incomplete || graph?.provisional?.length ||
       graph?.validation?.isValid === false || graph?.topology?.provisional?.length ||
       graph?.topology?.edges?.some((edge) => edge.confirmed === false) ||
-      graph?.nodes?.length !== result.nodes.length || graph?.components?.length !== result.branches.length) return false;
+      graph?.nodes?.length !== result.nodes.length || graph?.components?.filter(({ type }) => type !== 'ground').length !== result.branches.length) return false;
   const nodes = new Map(graph.nodes.map((node) => [node.id, new Set(node.members)]));
   const components = new Map(graph.components.map((component) => [component.id, component]));
   return nodes.has(result.referenceNodeId) && result.nodes.every((node) => nodes.has(node.id)) &&
@@ -41,7 +46,7 @@ function kclRows(nodes, branches, reference) {
   const termsByNode = new Map(nodes.map(({ id }) => [id, []]));
   for (const branch of branches) {
     if (branch.fromNodeId === branch.toNodeId) continue;
-    const term = { ...direction(branch), resistance: branch.resistance ?? null, sourceCurrent: branch.sourceCurrent };
+    const term = kclTerm(branch);
     termsByNode.get(branch.fromNodeId).push({ ...term, sign: 1 });
     termsByNode.get(branch.toNodeId).push({ ...term, sign: -1 });
   }
@@ -63,9 +68,65 @@ function sourceConstraint(branch, reference, substituted = false) {
   const potential = (id) => substituted && id === reference ? '0 V' : voltage(id);
   return {
     kind: 'source-constraint', ...direction(branch),
-    equals: branch.sourceVoltage, unit: 'V', substituted,
+    equals: branch.sourceVoltage, unit: 'V', substituted, referenceNodeId: reference,
     expression: `${potential(branch.fromNodeId)} − ${potential(branch.toNodeId)} = ${volts(branch.sourceVoltage)}`,
   };
+}
+
+/** Maximal voltage-source groups. A group touching the reference has fixed
+ * potentials from its source constraints, so it needs no floating-group KCL. */
+function findSupernodes(nodes, branches, sources, reference, potentials, roundoff) {
+  const adjacent = new Map(nodes.map(({ id }) => [id, []]));
+  for (const source of sources) {
+    for (const id of endpoints(source)) adjacent.get(id).push(source);
+  }
+  const seen = new Set();
+  const groups = [];
+  for (const [id, incident] of adjacent) {
+    if (seen.has(id) || !incident.length) continue;
+    const nodeIds = [id];
+    seen.add(id);
+    const internal = new Set();
+    for (const member of nodeIds) {
+      for (const source of adjacent.get(member)) {
+        internal.add(source);
+        const neighbor = source.fromNodeId === member ? source.toNodeId : source.fromNodeId;
+        if (seen.has(neighbor)) continue;
+        seen.add(neighbor);
+        nodeIds.push(neighbor);
+      }
+    }
+    const members = new Set(nodeIds);
+    if (members.has(reference)) continue;
+    const boundary = branches.filter(({ fromNodeId, toNodeId }) => members.has(fromNodeId) !== members.has(toNodeId));
+    const terms = boundary.map((branch) => ({ ...kclTerm(branch), sign: members.has(branch.fromNodeId) ? 1 : -1 }));
+    const boundaryCurrents = terms.map(({ sign, resistance, sourceCurrent, fromNodeId, toNodeId }) =>
+      sign * (resistance == null ? sourceCurrent : (potentials.get(fromNodeId) - potentials.get(toNodeId)) / resistance));
+    const kclResidual = boundaryCurrents.reduce((sum, value) => sum + value, 0);
+    // Allow the rounding already present in each member's verified MNA KCL
+    // row, including subtraction of near-equal resistor terminal voltages.
+    let tolerance = 0;
+    for (const member of nodes.filter(({ id: nodeId }) => members.has(nodeId))) {
+      tolerance += 1e-9 * member.currents.reduce((max, term) => Math.max(max, Math.abs(term.currentLeaving)), 0);
+    }
+    for (const branch of branches) {
+      if (branch.resistance == null || branch.fromNodeId === branch.toNodeId) continue;
+      for (const end of endpoints(branch)) {
+        if (members.has(end)) tolerance += roundoff * Math.max(...endpoints(branch).map((node) => Math.abs(potentials.get(node)))) / branch.resistance;
+      }
+    }
+    const sourceResiduals = [...internal].map((source) => {
+      const [from, to] = endpoints(source).map((node) => potentials.get(node));
+      const residual = from - to - source.sourceVoltage;
+      const limit = source.sourceVoltage === 0 ? roundoff * Math.max(Math.abs(from), Math.abs(to)) : 1e-9 * Math.abs(source.sourceVoltage);
+      return { componentId: source.componentId, residual, valid: Number.isFinite(residual) && Math.abs(residual) <= limit };
+    });
+    // A voltage-source cycle would give dependent or inconsistent constraints.
+    if (internal.size !== nodeIds.length - 1 || !Number.isFinite(kclResidual) ||
+        !Number.isFinite(tolerance) || Math.abs(kclResidual) > tolerance || sourceResiduals.some(({ valid }) => !valid)) return null;
+    groups.push({ nodeIds, sources: [...internal], boundary, terms, kclResidual, sourceResiduals });
+  }
+  return groups;
 }
 
 function resultEntry(kind, id, value, unit, label, expression, branch = null) {
@@ -125,6 +186,26 @@ function selectEntries(answer, result) {
   return [branchEntry(answer.branch, answer.kind, answer.value)];
 }
 
+function sourceCurrentEquation(source, sources, branches) {
+  const side = new Set([source.fromNodeId]);
+  const pending = [source.fromNodeId];
+  for (const node of pending) {
+    for (const branch of sources) {
+      if (branch === source || !endpoints(branch).includes(node)) continue;
+      const next = branch.fromNodeId === node ? branch.toNodeId : branch.fromNodeId;
+      if (side.has(next)) continue;
+      side.add(next);
+      pending.push(next);
+    }
+  }
+  // Adding KCL within this set cancels its internal source currents. The
+  // requested source is the only voltage source that crosses the cut.
+  const terms = branches.filter((branch) => branch !== source && side.has(branch.fromNodeId) !== side.has(branch.toNodeId))
+    .map((branch) => ({ ...kclTerm(branch), sign: side.has(branch.fromNodeId) ? -1 : 1, value: branch.current }));
+  return { kind: 'nodal-source-current', id: source.componentId, nodeIds: [...side], terms, value: source.current,
+    unit: 'A', expression: `Current through ${source.componentId} balances the other currents crossing these nodes.` };
+}
+
 /**
  * Explain one successful, matching DC solve. Branch IDs are component IDs in
  * the electrical graph. All references identify electrical entities, never
@@ -134,37 +215,61 @@ export function buildDcLesson(graph, result, intent) {
   if (!intent || !result?.ok || !matchesGraph(graph, result)) {
     return { ok: false, message: 'A verified DC solution is required for these steps.', steps: [] };
   }
+  if (intent.method === 'mesh') {
+    return { ok: false, message: 'Select Mesh Analysis for this question.', steps: [] };
+  }
   const answer = answerDcQuestion(intent, result);
   if (answer.kind === 'unsupported') return { ok: false, message: answer.message, steps: [] };
 
   const { nodes, branches, referenceNodeId: reference } = result;
   const sources = branches.filter((branch) => branch.sourceVoltage != null);
-  const currentSources = branches.filter((branch) => branch.sourceCurrent != null);
   const unknowns = nodes.filter((node) => node.id !== reference);
-  const rows = kclRows(nodes, branches, reference);
   const allNodes = nodes.map(({ id }) => id);
-  const entries = selectEntries(answer, result);
+  const potentials = new Map(nodes.map((node) => [node.id, node.voltage]));
+  const roundoff = 16 * Number.EPSILON * Math.max(1, unknowns.length + sources.length);
+  const supernodes = findSupernodes(nodes, branches, sources, reference, potentials, roundoff);
+  if (!supernodes) return { ok: false, message: 'The supernode equations could not be verified against the nodal solution.', steps: [] };
+  const supernodeNodeIds = supernodes.flatMap(({ nodeIds }) => nodeIds);
+  const supernodeSourceIds = supernodes.flatMap(({ sources: groupSources }) => groupSources.map(({ componentId }) => componentId));
+  const boundaryBranches = unique(supernodes.flatMap(({ boundary }) => boundary));
+  const relations = nodalPotentials(nodes, sources, reference);
+  const knownPotentials = Object.fromEntries([...relations].filter(([, { variable }]) => variable == null).map(([id, { offset }]) => [id, offset]));
+  const rows = kclRows(nodes, branches, reference).filter(({ nodeId }) =>
+    !supernodeNodeIds.includes(nodeId) && !Object.hasOwn(knownPotentials, nodeId));
+  const reducedRows = [...rows, ...supernodes.map(({ nodeIds, terms }) => ({
+    nodeId: relations.get(nodeIds[0]).variable, terms,
+  }))];
+  const algebra = traceNodalAlgebra(reducedRows, relations, potentials);
+  const anchored = [...relations].filter(([, { variable, componentId }]) => variable == null && componentId);
+  const ordinarySources = anchored.map(([, { componentId }]) => sources.find((source) => source.componentId === componentId));
+  const isSupernodeQuestion = answer.kind === 'supernode';
+  const noSupernodeMessage = 'There is no floating voltage-source group. Ordinary nodal analysis is sufficient. '
+    + (sources.length ? 'The reference node fixes the voltages in each connected voltage-source group.' : 'There are no ideal voltage sources between nonreference nodes.');
+  const entries = isSupernodeQuestion ? [
+    ...nodes.filter(({ id }) => supernodeNodeIds.includes(id)).map(nodeEntry),
+    ...unique([...boundaryBranches, ...sources.filter(({ componentId }) => supernodeSourceIds.includes(componentId))])
+      .map((branch) => branchEntry(branch, 'branch-current', branch.current)),
+  ] : selectEntries(answer, result);
   const targetNodes = unique(entries.flatMap((entry) => entry.direction
     ? [entry.direction.fromNodeId, entry.direction.toNodeId]
     : [entry.id, reference]));
   const targetBranches = branches.filter((branch) => entries.some((entry) => entry.direction?.branchId === branch.componentId));
   const branchById = new Map(branches.map((branch) => [branch.componentId, branch]));
-  const potentials = new Map(nodes.map((node) => [node.id, node.voltage]));
   const incidentCurrent = new Map(nodes.map((node) => [node.id, Math.max(0, ...node.currents.map((term) => Math.abs(term.currentLeaving)))]));
-  const roundoff = 16 * Number.EPSILON * Math.max(1, unknowns.length + sources.length);
-  const referenceArrowSteps = new Set(['reference', 'directions', 'kcl', 'constraints', 'substitute']);
   const steps = [];
-  function add(id, title, explanation, equations, nodeIds, relevantBranches, finalAnswer) {
+  function add(id, title, explanation, equations, nodeIds, relevantBranches, finalAnswer, metadata = {}) {
     const ids = relevantBranches.map((branch) => branch.componentId);
-    const directions = finalAnswer
+    const directions = id === 'answer' && finalAnswer
       ? finalAnswer.flatMap((entry) => entry.direction ? [entry.direction] : [])
       : relevantBranches.map(direction);
     const currentArrowMode = id === 'solve' || id === 'answer' ? 'actual'
-      : referenceArrowSteps.has(id) ? 'reference' : null;
+      : (id === 'reference' || id.startsWith('constraints') || id.startsWith('kcl') || metadata.supernodeNodeIds) ? 'reference' : null;
     steps.push({
       id, title, explanation, equations, nodeIds: unique(nodeIds),
+      ...metadata,
       componentIds: ids, branchIds: ids, wireIds: [],
       currentArrowMode,
+      ...(currentArrowMode === 'actual' ? { branchFlows: branches } : {}),
       currentDirections: currentArrowMode === 'actual' ? directions.map((arrow) => {
         const branch = branchById.get(arrow.branchId);
         const sign = arrow.fromTerminal === branch.fromTerminal ? 1 : -1;
@@ -179,52 +284,78 @@ export function buildDcLesson(graph, result, intent) {
       ...(finalAnswer ? { finalAnswer } : {}),
     });
   }
-  const answerLabel = entries.length === 1 ? entries[0].label : {
-    'branch-currents': 'the branch currents',
-    'node-voltages': 'the node voltages',
-    general: 'the node voltages and branch currents',
-  }[answer.kind];
-  add('identify', 'Identify the circuit quantities',
-    `Find ${answerLabel}. Start by tracing which component terminals share each of the ${nodes.length} electrical nodes.`,
-    [], allNodes, branches);
-  add('reference', 'Set the reference and unknowns',
-    `Set ${reference} to 0 V so every other voltage has the same reference. The remaining node voltages and any voltage-source currents are unknowns.`,
+  add('reference', 'Label the nodes and choose 0 V',
+    `Follow each continuous wire to find the ${nodes.length} nodes, then set ${reference} to 0 V. A negative current flows against its reference arrow.`,
     [{ kind: 'reference', nodeId: reference, value: 0, unit: 'V', expression: `${voltage(reference)} = 0 V` },
-      ...unknowns.map(({ id }) => ({ kind: 'unknown-voltage', nodeId: id, expression: `${voltage(id)} is unknown` })),
-      ...sources.map((branch) => ({ kind: 'unknown-current', branchId: branch.componentId, expression: `${current(branch.componentId)} is unknown` }))],
-    allNodes, sources);
-  add('directions', 'Set current reference directions',
-    currentSources.length
-      ? 'For current sources, use the declared reference arrows. A negative specified current flows against its arrow.'
-        + (sources.length ? ' A voltage source’s reference current enters its positive terminal.' : '')
-      : 'Give each current an arrow so we can keep track of its sign. A negative answer means the current flows the other way; the source’s reference arrow enters its positive terminal.',
-    branches.map((branch) => ({ kind: 'current-direction', ...direction(branch),
-      expression: `${current(branch.componentId)}: ${branch.fromNodeId} (${branch.fromTerminal}) → ${branch.toNodeId} (${branch.toTerminal})` })),
-    allNodes, branches);
-  if (rows.length) {
-    add('kcl', 'Apply Kirchhoff’s current law',
-      'What flows into each node must flow out, so the signed sum of currents leaving is zero. '
-        + (currentSources.length ? 'Add the given current at the reference arrow’s tail and subtract it at the head. ' : '')
-        + 'Use Ohm’s law for resistors.'
-        + (sources.length ? ' Leave voltage-source currents as unknowns.' : ''),
-      rows.map((row) => kclEquation(row, reference, false)), allNodes, branches);
+      ...unknowns.filter(({ id }) => !Object.hasOwn(knownPotentials, id)).map(({ id }) =>
+        ({ kind: 'unknown-voltage', nodeId: id, expression: `${voltage(id)} is unknown` }))],
+    allNodes, branches, null, {
+      directionEquations: branches.map((branch) => ({ kind: 'current-direction', ...direction(branch),
+        expression: `${current(branch.componentId)}: ${branch.fromTerminal} → ${branch.toTerminal}` })),
+    });
+  for (let index = 0; index < ordinarySources.length; index += 2) {
+    const group = ordinarySources.slice(index, index + 2);
+    const fixed = anchored.slice(index, index + group.length);
+    const equations = group.map((source) => sourceConstraint(source, reference));
+    add(index ? `constraints-${index / 2 + 1}` : 'constraints', `Use ${group.map(({ componentId }) => componentId).join(' and ')} to find node voltages`,
+      'Each voltage source fixes its positive terminal minus its negative terminal. Start from 0 V to find the connected node voltages.',
+      equations, group.flatMap(endpoints), group,
+      fixed.map(([id]) => nodeEntry({ id, voltage: potentials.get(id) })),
+      { workedEquations: equations.map((equation, i) => ({ ...equation, staged: true,
+        knownPotentials: { [fixed[i][1].parent]: knownPotentials[fixed[i][1].parent] },
+        substitutionExpression: sourceConstraint(group[i], reference, true).expression })) });
   }
-  if (sources.length) {
-    add('constraints', 'Apply voltage-source constraints',
-      'An ideal voltage source fixes the difference between its two terminal voltages. Write the positive-terminal voltage minus the negative-terminal voltage.',
-      sources.map((source) => sourceConstraint(source, reference)), sources.flatMap(endpoints), sources);
+  const workedKcl = (row, equations) => ({ ...equations, staged: true, knownPotentials,
+    substitutionExpression: kclEquation(row, reference, true).expression });
+  for (let index = 0; index < rows.length; index += 2) {
+    const group = rows.slice(index, index + 2);
+    const nodeIds = group.map(({ nodeId }) => nodeId);
+    const relevantBranches = unique(group.flatMap(({ terms }) => terms.map(({ branchId }) => branchById.get(branchId))));
+    const equations = group.map((row) => kclEquation(row, reference, false));
+    add(index === 0 ? 'kcl' : `kcl-${index / 2 + 1}`, `Balance current at ${nodeIds.join(' and ')}`,
+      'Current entering a node equals current leaving it. Use the arrows for signs and divide each resistor’s voltage drop by its resistance.',
+      equations, nodeIds, relevantBranches, null,
+      { workedEquations: equations.map((equation, i) => workedKcl(group[i], equation)) });
   }
-  if (rows.length || sources.length) {
-    add('substitute', 'Substitute known values',
-      'Put the known component values into the equations. Use 0 V wherever the reference node appears.',
-      [...rows.map((row) => kclEquation(row, reference, true)),
-        ...sources.map((source) => sourceConstraint(source, reference, true))], allNodes, branches);
+  supernodes.forEach(({ nodeIds, sources: groupSources, boundary, terms }, index) => {
+    const equations = [kclEquation({ nodeIds, terms }, reference, false),
+      ...groupSources.map((source) => sourceConstraint(source, reference))];
+    const sourceNames = groupSources.map(({ componentId }) => componentId).join(', ');
+    const sourceSubject = groupSources.length === 1 ? `Source ${sourceNames} connects` : `Sources ${sourceNames} connect`;
+    add(`supernode-${index + 1}`, `Apply KCL to supernode ${index + 1}`,
+      `${sourceSubject} nodes ${nodeIds.join(', ')}. The unknown source currents cancel inside the group, so balance the boundary currents and use the source voltages to relate its nodes.`,
+      equations, nodeIds, [...groupSources, ...boundary], nodeIds.flatMap((id) => {
+        const { variable, offset } = relations.get(id);
+        return id === variable ? [] : [{ kind: 'nodal-potential', id, variable, offset,
+          expression: `V[${id}] = V[${variable}] + (${offset} V)` }];
+      }), {
+        supernodeNodeIds: nodeIds,
+        supernodeSourceIds: groupSources.map(({ componentId }) => componentId),
+        workedEquations: equations.map((equation, equationIndex) => equationIndex === 0
+          ? workedKcl({ nodeIds, terms }, equation) : { ...equation, staged: true,
+            substitutionExpression: sourceConstraint(groupSources[equationIndex - 1], reference, true).expression }),
+      });
+  });
+  if (algebra?.elimination.length) {
+    add('collect', 'Collect the voltage terms',
+      'Replace the related node voltages, then group terms that use the same unknown.', algebra.original, allNodes, []);
+    for (const { variable, equations } of algebra.elimination) {
+      add(`eliminate-${variable}`, `Eliminate ${variable} from later equations`,
+        'Subtract a multiple of an earlier equation so this voltage cancels.', equations, [variable, ...equations.flatMap(({ terms }) => terms.map(({ id }) => id))], []);
+    }
   }
-  add('solve', 'Solve the simultaneous equations',
-    (sources.length ? 'Solve the current-balance and voltage-source equations together. ' : 'Solve the current-balance equations for the node voltages. ')
-      + 'The resulting voltage drops let us calculate the resistor currents.',
-    [...nodes.map(nodeEntry), ...[...sources, ...currentSources].map((branch) => branchEntry(branch, 'branch-current', branch.current))],
-    allNodes, branches);
+  if (reducedRows.length) {
+    const equations = algebra?.backSubstitution ?? [];
+    const related = [...relations].filter(([id, { variable }]) => variable != null && variable !== id)
+      .map(([id, { variable, offset }]) => ({ kind: 'nodal-potential', id, variable, offset, baseVoltage: potentials.get(variable),
+        expression: `Use V[${variable}] and the source offset to find V[${id}].` }));
+    add('solve', reducedRows.length === 1 ? 'Find the unknown voltage' : 'Find the remaining voltages',
+      algebra ? (algebra.elimination.length ? 'Use the last equation first, then work upward to find each voltage.'
+        : 'Collect the voltage terms and divide by the coefficient of each unknown.')
+        : 'Use the displayed equations to find the voltages. The simplified calculation is unavailable at this numerical scale.',
+      equations, allNodes, branches, unknowns.filter(({ id }) => !Object.hasOwn(knownPotentials, id)).map(nodeEntry),
+      { workedEquations: [...(algebra?.elimination.length ? [] : algebra?.original ?? []), ...equations, ...related] });
+  }
   const answerPresentation = {
     'branch-current': [`Calculate current through ${answer.branch?.componentId}`, answer.branch?.sourceCurrent != null
       ? 'Use the specified signed current. Positive follows the source’s reference arrow.'
@@ -240,9 +371,26 @@ export function buildDcLesson(graph, result, intent) {
     'node-voltages': ['Read the node voltages', 'Read each solved voltage relative to the reference node at 0 V.'],
     'branch-currents': ['Find the branch currents', 'Use the specified currents for current sources, the solved currents for voltage sources, and Ohm’s law for resistors. A negative current flows against its reference arrow.'],
     general: ['Read the circuit solution', 'Read the node voltages relative to 0 V. Use the voltage drops to find resistor currents, with signs measured against the reference arrows.'],
+    supernode: ['Read the supernode results', 'Read each voltage relative to the reference node. Positive branch current follows the indicated reference direction.'],
   };
   const [answerTitle, answerExplanation] = answerPresentation[answer.kind];
-  add('answer', answerTitle, answerExplanation,
-    entries, targetNodes, targetBranches, entries);
-  return { ok: true, method: 'modified-nodal-analysis', steps };
+  const allCurrents = branches.map((branch) => branchEntry(branch, 'branch-current', branch.current));
+  const sourceEquations = sources.map((source) => sourceCurrentEquation(source, sources, branches));
+  const measuredSources = sourceEquations.filter(({ id }) => targetBranches.some((branch) => branch.componentId === id) &&
+    entries.some((entry) => entry.id === id && entry.unit === 'A'));
+  const answerEntries = answer.kind === 'general' || !entries.length ? allCurrents : entries;
+  const currentSummary = answer.kind === 'general' || !entries.length;
+  const answerWorks = [...(currentSummary ? sourceEquations : measuredSources), ...answerEntries];
+  const currentExplanation = [
+    branches.some(({ resistance }) => resistance != null) && 'Divide each resistor’s voltage drop by its resistance.',
+    sources.length ? 'Use current balance to find the voltage-source currents.'
+      : branches.some(({ sourceCurrent }) => sourceCurrent != null) && 'Use the given current for each current source.',
+  ].filter(Boolean).join(' ');
+  add(currentSummary && !reducedRows.length ? 'solve' : 'answer', currentSummary ? 'Find the branch currents' : answerTitle,
+    currentSummary ? currentExplanation : answerExplanation,
+    answerWorks, currentSummary ? allNodes : targetNodes, currentSummary ? branches : targetBranches, answerEntries,
+    { workedEquations: answerWorks, allResults: [...nodes.map(nodeEntry), ...allCurrents],
+      extraEquations: currentSummary ? [] : sourceEquations.filter((equation) => !measuredSources.includes(equation)),
+      ...(isSupernodeQuestion && supernodes.length ? { supernodeNodeIds, supernodeSourceIds } : {}) });
+  return { ok: true, method: 'modified-nodal-analysis', steps, supernodes, ...(isSupernodeQuestion && !supernodes.length ? { noSupernodeMessage } : {}) };
 }

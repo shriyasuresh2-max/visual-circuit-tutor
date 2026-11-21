@@ -52,21 +52,21 @@ describe('mapLessonHighlights', () => {
     const { map, solved } = fixture();
     const focus = map('reference');
     expect(focus.nodes.get(solved.referenceNodeId)).toBe('reference');
-    for (const node of solved.nodes.filter(({ id }) => id !== solved.referenceNodeId)) {
-      expect(focus.nodes.get(node.id)).toBe('unknown');
-    }
-    expect([...focus.componentIds]).toEqual(['S']);
+    const source = solved.branches.find(({ componentId }) => componentId === 'S');
+    expect(focus.nodes.get(source.fromNodeId)).toBe('node');
+    const unknown = solved.nodes.find(({ id }) => id !== solved.referenceNodeId && id !== source.fromNodeId);
+    expect(focus.nodes.get(unknown.id)).toBe('unknown');
+    expect(focus.componentIds).toEqual(new Set(['S', 'RA', 'RB', 'RT']));
   });
 
   it('maps KCL nodes and their incident branches and wires', () => {
     const { graph, layout, map, solved } = fixture();
     const focus = map('kcl');
-    for (const { id } of graph.nodes.filter(({ id }) => id !== solved.referenceNodeId)) {
-      expect(focus.nodes.get(id)).toBe('kcl');
-    }
-    expect(focus.componentIds).toEqual(new Set(['S', 'RA', 'RB', 'RT']));
+    expect(focus.nodes.size).toBe(1);
+    expect([...focus.nodes.values()]).toEqual(['kcl']);
+    expect(focus.componentIds).toEqual(new Set(['RA', 'RB', 'RT']));
     expect(focus.wireIds).toEqual(new Set(layout.allWires.map(({ id }) => id)));
-    const nodeId = solved.nodes.find(({ id }) => id !== solved.referenceNodeId).id;
+    const [nodeId] = focus.nodes.keys();
     const oneRow = buildDcLesson(graph, solved, parseDcQuestion('All node voltages')).steps.find(({ id }) => id === 'kcl');
     const [equation] = oneRow.equations.filter((row) => row.nodeId === nodeId);
     const subjects = mapLessonHighlights(graph, layout, {

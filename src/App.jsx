@@ -26,7 +26,6 @@ export default function App() {
   const [activeStep, setActiveStep] = useState(0);
 
   // Uploaded Image State (persisted across pages)
-  const [imageFile, setImageFile] = useState(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
 
   // The question the student wants answered. Entered on the landing page and
@@ -47,23 +46,27 @@ export default function App() {
   const imageIdSeq = useRef(0);
   const [componentValues, setComponentValues] = useState(() => new Map());
   const [lessonFocus, setLessonFocus] = useState(null);
+  const [circuitCollapsedFor, setCircuitCollapsedFor] = useState(null);
 
   // Reference Viewer Drawer State (in workspace)
   const [isReferenceOpen, setIsReferenceOpen] = useState(false);
 
   // Circuit analysis state managed by the custom hook
-  const { analysisState, analyzeImage, clearAnalysis } = useCircuitAnalysis();
+  const { analysisState, openWorkspace, analyzeImage, retryAnalysis, clearAnalysis } = useCircuitAnalysis();
+  const imageFile = analysisState.file;
   const extractedAnalysis = analysisState.status === 'success' ? analysisState.result : null;
+  const reconstructed = analysisState.workspace;
   const analysisResult = useMemo(
     () => applyComponentEdits(extractedAnalysis, componentValues),
     [extractedAnalysis, componentValues],
   );
   const electricalGraph = useMemo(
-    () => analysisResult?.contains_circuit !== false && analysisResult?.components?.length
-      ? buildGraph(analysisResult)
-      : null,
-    [analysisResult],
+    () => analysisResult === extractedAnalysis ? reconstructed?.graph ?? null : buildGraph(analysisResult),
+    [analysisResult, extractedAnalysis, reconstructed],
   );
+  const handleContinueToWorkspace = useCallback(() => {
+    openWorkspace(imageFile, () => setCurrentView('workspace'));
+  }, [openWorkspace, imageFile]);
 
   const handleApplyComponentValues = useCallback((updates) => {
     if (updates.size > 0) {
@@ -115,11 +118,8 @@ export default function App() {
       URL.revokeObjectURL(imagePreviewUrl);
     }
 
-    setImageFile(file);
     setImagePreviewUrl(previewUrl);
 
-    // Clear any previous analysis result before starting a new one
-    clearAnalysis();
     analyzeImage(file);
 
     // A saved circuit belongs to the image it was edited from, so a new upload
@@ -129,14 +129,13 @@ export default function App() {
     setSavedCircuit(null);
     setSavedCircuitImageId(null);
     setComponentValues(new Map());
-  }, [imagePreviewUrl, analyzeImage, clearAnalysis]);
+  }, [imagePreviewUrl, analyzeImage]);
 
   // Handle image removal: revoke URL, clear image and analysis state
   const handleImageRemoved = useCallback(() => {
     if (imagePreviewUrl) {
       URL.revokeObjectURL(imagePreviewUrl);
     }
-    setImageFile(null);
     setImagePreviewUrl(null);
     setIsReferenceOpen(false);
     clearAnalysis();
@@ -205,14 +204,15 @@ export default function App() {
           imagePreviewUrl={imagePreviewUrl}
           onImageSelected={handleImageSelected}
           onImageRemoved={handleImageRemoved}
-          onContinueToWorkspace={() => setCurrentView('workspace')}
+          onContinueToWorkspace={handleContinueToWorkspace}
+          onRetryAnalysis={() => retryAnalysis(imageFile)}
           analysisState={analysisState}
           questionText={questionText}
           onQuestionChange={setQuestionText}
         />
       ) : (
         /* PAGE TWO: CIRCUIT LEARNING WORKSPACE */
-        <div className="workspace-screen">
+        <div className={`workspace-screen${imageFile && electricalGraph ? ' workspace-screen--solver' : ''}`}>
           {/* 1. Top Compact Header */}
           <WorkspaceHeader
             onNewProblem={handleNewProblem}
@@ -223,31 +223,44 @@ export default function App() {
           />
 
           {!imageFile && exampleParameters}
-          <main className="workspace-main-grid">
-            <section className="circuit-column" aria-label="Circuit Schematic Visualisation">
+          <main className={`workspace-main-grid${imageFile && electricalGraph ? ' workspace-main-grid--solver' : ''}`}>
+            <section className="circuit-column" id="workspace-circuit" tabIndex={-1} aria-label="Circuit Schematic Visualisation">
+              {imageFile && electricalGraph && (
+                <div className="workspace-circuit-shortcuts">
+                  <button type="button" className="rc-action-btn"
+                    aria-expanded={circuitCollapsedFor !== imageId} aria-controls="workspace-schematic"
+                    onClick={() => setCircuitCollapsedFor(circuitCollapsedFor === imageId ? null : imageId)}>
+                    {circuitCollapsedFor === imageId ? 'Show circuit' : 'Hide circuit'}
+                  </button>
+                  <a href={lessonStep ? '#workspace-lesson' : '#workspace-solution'}>Go to solution</a>
+                </div>
+              )}
               {imageFile && !electricalGraph ? (
                 <AnalysisResultPanel analysisState={analysisState} />
               ) : (
-                <CircuitDiagram
-                  circuitResult={circuitResult}
-                  activeStep={activeStep}
-                  onSelectStep={setActiveStep}
-                  analysisResult={analysisResult}
-                  electricalGraph={electricalGraph}
-                  lessonStep={lessonStep}
-                  reconstructionKey={extractedAnalysis}
-                  onSaveCircuit={handleCircuitSaved}
-                  imageId={imageId}
-                  savedCircuit={
-                    savedCircuitImageId !== null && savedCircuitImageId === imageId
-                      ? savedCircuit
-                      : null
-                  }
-                />
+                <div id="workspace-schematic" data-collapsed={Boolean(imageFile && circuitCollapsedFor === imageId)}>
+                  <CircuitDiagram
+                    circuitResult={circuitResult}
+                    activeStep={activeStep}
+                    onSelectStep={setActiveStep}
+                    analysisResult={analysisResult}
+                    electricalGraph={electricalGraph}
+                    preparedLayout={analysisResult === extractedAnalysis ? reconstructed?.layout : undefined}
+                    lessonStep={lessonStep}
+                    reconstructionKey={extractedAnalysis}
+                    onSaveCircuit={handleCircuitSaved}
+                    imageId={imageId}
+                    savedCircuit={
+                      savedCircuitImageId !== null && savedCircuitImageId === imageId
+                        ? savedCircuit
+                        : null
+                    }
+                  />
+                </div>
               )}
             </section>
 
-            <section className="explanation-column" aria-label="Circuit solution and explanation">
+            <section className="explanation-column" id="workspace-solution" tabIndex={-1} aria-label="Circuit solution and explanation">
               {imageFile ? electricalGraph && (
                 <DcSolvePanel
                   key={imageId}
@@ -255,6 +268,7 @@ export default function App() {
                   onApplyValues={handleApplyComponentValues}
                   questionText={questionText}
                   onStepChange={handleLessonStep}
+                  onShowCircuit={() => setCircuitCollapsedFor(null)}
                 />
               ) : exampleSteps}
             </section>

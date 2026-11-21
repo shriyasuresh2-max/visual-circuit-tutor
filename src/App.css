@@ -279,6 +279,8 @@
 
 .landing-action-buttons {
   display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   justify-content: flex-end;
 }
 
@@ -296,8 +298,13 @@
   transition: background-color 0.15s;
 }
 
-.btn-continue-workspace:hover {
+.btn-continue-workspace:hover:not(:disabled) {
   background-color: #1d4ed8;
+}
+
+.btn-continue-workspace:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .landing-error-banner {
@@ -1575,8 +1582,17 @@
   margin-top: 0.4rem;
 }
 
+.dc-method-selector {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
 .dc-value-editor input,
-.dc-value-editor select {
+.dc-value-editor select,
+.dc-method-selector select {
   width: min(65%, 12rem);
   padding: 0.3rem 0.5rem;
   color: var(--text-primary);
@@ -1615,6 +1631,11 @@
 
 .dc-question-answer h3 {
   margin-bottom: 0.4rem;
+}
+
+.dc-answer-list summary {
+  cursor: pointer;
+  color: var(--text-secondary);
 }
 
 .dc-lesson {
@@ -1674,10 +1695,118 @@
   font-size: 0.82rem;
 }
 
+.dc-equivalent-illustration {
+  width: min(100%, 16rem);
+  margin: 0;
+  color: #a5b4fc;
+}
+
+.dc-reduction-network {
+  margin: 0;
+  color: #a5b4fc;
+  font-size: 0.85rem;
+}
+
+.dc-reduction-network ul {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0;
+  list-style: none;
+}
+
+.dc-reduction-network li,
+.dc-reduction-network-branch {
+  display: grid;
+  align-items: center;
+  gap: 0.25rem;
+  overflow-wrap: anywhere;
+}
+
+.dc-reduction-network li {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.dc-reduction-network-branch {
+  grid-template-columns: minmax(0, 1fr) minmax(2rem, 3rem) minmax(0, 1fr);
+  text-align: center;
+}
+
+.dc-source-transformation-illustration {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+  color: #a5b4fc;
+  text-align: center;
+  font-size: 0.78rem;
+}
+
+.dc-source-transformation-illustration > div {
+  min-width: 0;
+  padding: 0.45rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.dc-source-transformation-illustration figcaption {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+}
+
+.dc-source-transformation-illustration svg {
+  display: block;
+  width: 100%;
+  max-width: 8rem;
+  margin: auto;
+}
+
+.dc-source-pair-values {
+  display: grid;
+  gap: 0.2rem;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
 .dc-lesson-box p {
   margin-top: 0.35rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.dc-superposition-states {
+  display: grid;
+  gap: 0.25rem;
+  padding-left: 1.1rem;
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.dc-contribution-table {
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+}
+
+.dc-contribution-table table { width: 100%; border-collapse: collapse; }
+.dc-contribution-table caption { text-align: left; font-weight: 600; }
+.dc-contribution-table :is(caption, th, td) { padding: 0.45rem 0.65rem; }
+.dc-contribution-table :is(th, td) { text-align: left; border-top: 1px solid var(--border-subtle); }
+.dc-contribution-table td { white-space: nowrap; }
+
+.dc-superposition-schematic {
+  margin: 0.85rem 0 0;
+  font-size: 0.82rem;
+}
+
+.dc-superposition-schematic svg {
+  display: block;
+  margin-top: 0.35rem;
+  width: 100%;
+  max-height: 320px;
+  background: #0c111a;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
 }
 
 .dc-lesson-equations {
@@ -1722,22 +1851,150 @@
   color: #86efac;
 }
 
+.workspace-main-grid--solver {
+  grid-template-columns: minmax(0, 53fr) minmax(0, 47fr);
+  gap: 1rem;
+  padding-bottom: 1rem;
+}
+
+.workspace-main-grid--solver .diagram-panel-header {
+  flex-wrap: wrap;
+  gap: 0.4rem 0.65rem;
+}
+
+.workspace-main-grid--solver .schematic-svg { max-width: none; }
+
+.workspace-main-grid--solver .dc-solve-panel form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+}
+
+.workspace-main-grid--solver .dc-method-selector { margin-bottom: 0; }
+.workspace-main-grid--solver .dc-value-editor { flex: 1 0 100%; margin-top: 0; }
+.dc-lesson-content > .dc-question-answer { margin-top: 0; }
+.dc-lesson-content > .dc-nodal-explanation { margin-top: 0; line-height: 1.5; }
+.dc-nodal-details summary { cursor: pointer; color: var(--text-secondary); }
+.dc-nodal-details > .dc-lesson-box { margin-top: 0.5rem; }
+.dc-lesson-progress { text-align: center; }
+.workspace-circuit-shortcuts,
+.dc-lesson-circuit-link { display: none; }
+
+.workspace-main-grid--solver .dc-lesson-controls {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-surface);
+  margin-bottom: 0.55rem;
+}
+
+@media (min-width: 1000px) and (min-height: 560px) {
+  .workspace-screen--solver { height: 100dvh; min-height: 0; }
+
+  .workspace-main-grid--solver {
+    flex: 1 1 0;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .workspace-main-grid--solver > :is(.circuit-column, .explanation-column) { max-height: 100%; }
+  .workspace-main-grid--solver .circuit-column { display: block; overflow-y: auto; }
+  .workspace-main-grid--solver .dc-solve-panel {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .workspace-main-grid--solver :is(.dc-solve-panel, .circuit-column) {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-subtle) var(--bg-surface);
+  }
+
+  .workspace-main-grid--solver .schematic-svg { max-height: calc(100dvh - 14rem); }
+  .workspace-main-grid--solver .circuit-column:has(.dc-superposition-schematic) .schematic-svg { max-height: 40dvh; }
+  .workspace-main-grid--solver .dc-superposition-schematic svg { max-height: min(22dvh, 280px); }
+}
+
+@media (max-width: 999px) {
+  .workspace-main-grid--solver { grid-template-columns: minmax(0, 1fr); padding: 0.75rem; }
+  .workspace-main-grid--solver .diagram-panel-header > .panel-title { flex: 1 0 100%; }
+  .workspace-main-grid--solver #workspace-schematic[data-collapsed="true"] { display: none; }
+
+  .workspace-circuit-shortcuts {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.65rem;
+    margin-bottom: 0.45rem;
+  }
+
+  .workspace-circuit-shortcuts a,
+  .dc-lesson-circuit-link {
+    color: var(--text-secondary);
+    text-decoration: underline;
+    text-underline-offset: 0.15em;
+    font-size: 0.76rem;
+  }
+
+  .dc-lesson-circuit-link { display: block; }
+}
+
+.dc-current-playback {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.dc-current-flow-tools[role="group"],
+.dc-current-flow-tools label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.dc-current-flow-tools[role="group"] {
+  flex-wrap: wrap;
+}
+
+.dc-current-flow-tools select {
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.25rem;
+}
+
+.dc-current-motion-note {
+  display: none;
+}
+
 .dc-current-flow {
-  stroke-dasharray: 3 5;
+  stroke: #63c5df;
+  stroke-dasharray: 2.5px calc(var(--dc-flow-spacing) - 2.5px);
   stroke-dashoffset: 0;
-  opacity: 0.85;
   pointer-events: none;
-  animation: dc-current-flow 0.7s linear infinite;
+  animation: dc-current-flow var(--dc-flow-duration) linear infinite;
+  animation-play-state: var(--dc-flow-play-state, running);
 }
 
 /* A negative offset advances along the electrically ordered SVG path. */
 @keyframes dc-current-flow {
-  to { stroke-dashoffset: -8; }
+  to { stroke-dashoffset: calc(0px - var(--dc-flow-spacing)); }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .dc-current-flow {
     animation: none;
     display: none;
+  }
+
+  .dc-current-playback .dc-current-flow-tools {
+    display: none;
+  }
+
+  .dc-current-motion-note {
+    display: block;
   }
 }

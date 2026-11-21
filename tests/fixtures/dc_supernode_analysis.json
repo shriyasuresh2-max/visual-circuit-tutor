@@ -1,0 +1,28 @@
+{
+  "contains_circuit": true,
+  "is_circuit": true,
+  "circuit_type": "mixed",
+  "components": [
+    { "id": "V0", "type": "voltage_source", "visible_value": "10 V", "confidence": 0.99,
+      "terminals": [{ "label": "+", "position": { "x": 0.18, "y": 0.31 } }, { "label": "-", "position": { "x": 0.18, "y": 0.72 } }] },
+    { "id": "V1", "type": "voltage_source", "visible_value": "4 V", "confidence": 0.99,
+      "terminals": [{ "label": "+", "position": { "x": 0.4, "y": 0.53 } }, { "label": "-", "position": { "x": 0.6, "y": 0.53 } }] },
+    { "id": "R1", "type": "resistor", "visible_value": "2 ohm", "confidence": 0.99,
+      "terminals": [{ "label": "A", "position": { "x": 0.35, "y": 0.31 } }, { "label": "B", "position": { "x": 0.35, "y": 0.46 } }] },
+    { "id": "R2", "type": "resistor", "visible_value": "2 ohm", "confidence": 0.99,
+      "terminals": [{ "label": "A", "position": { "x": 0.35, "y": 0.6 } }, { "label": "B", "position": { "x": 0.35, "y": 0.72 } }] },
+    { "id": "R3", "type": "resistor", "visible_value": "2 ohm", "confidence": 0.99,
+      "terminals": [{ "label": "A", "position": { "x": 0.65, "y": 0.6 } }, { "label": "B", "position": { "x": 0.65, "y": 0.72 } }] },
+    { "id": "I1", "type": "current_source", "visible_value": "1 A", "confidence": 0.99,
+      "currentDirection": { "fromTerminal": "B", "toTerminal": "A" },
+      "terminals": [{ "label": "A", "position": { "x": 0.82, "y": 0.53 } }, { "label": "B", "position": { "x": 0.82, "y": 0.72 } }] }
+  ],
+  "nodes": [
+    { "id": "ground", "members": ["V0.-", "R2.B", "R3.B", "I1.B"] },
+    { "id": "supply", "members": ["V0.+", "R1.A"] },
+    { "id": "a", "members": ["V1.+", "R1.B", "R2.A"] },
+    { "id": "b", "members": ["V1.-", "R3.A", "I1.A"] }
+  ],
+  "image_width": 1000,
+  "image_height": 700
+}

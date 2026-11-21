@@ -17,3 +17,7 @@ backend/__pycache__/
 
 # Backend — opt-in GEMINI_DEBUG_DIR analysis captures (real circuit data)
 debug_analyses/
+
+# Local recovery snapshot taken before reconstruction stabilisation
+.backup-pre-stabilization.tar.gz
+audit-visual*.png

@@ -19,6 +19,10 @@ import { mapLessonHighlights } from '../circuit/dcLessonHighlights.js';
 import { placeDcCurrentArrows } from '../circuit/dcCurrentArrows.js';
 import { LABEL_CARD, NODE_LABEL_FONT_SIZE, labelSize } from '../circuit/labelMetrics.js';
 import { placeNodeLabels } from '../circuit/nodeLabels.js';
+import { placeMeshCurrentArrows } from '../circuit/meshVisualization.js';
+import { termKey } from '../circuit/electricalGraph.js';
+import { dcParticleDuration, mapDcCurrentParticles, PARTICLE_SPACING, stitchResistorParticleRuns } from '../circuit/dcCurrentParticles.js';
+import { resistorGeometry, RESISTOR_ZIGZAG } from '../circuit/resistorGeometry.js';
 
 /**
  * Technical SVG Schematic of a DC Series Circuit
@@ -39,6 +43,7 @@ export default function CircuitDiagram({
   onSelectStep,
   analysisResult,
   electricalGraph,
+  preparedLayout,
   lessonStep,
   reconstructionKey = analysisResult,
   onSaveCircuit,
@@ -49,9 +54,10 @@ export default function CircuitDiagram({
   // Reconstructed mode — render from image analysis
   // -----------------------------------------------------------------------
   const layout = useMemo(() => {
+    if (preparedLayout) return preparedLayout;
     if (!analysisResult || !analysisResult.components?.length) return null;
     return layoutCircuit(analysisResult, electricalGraph);
-  }, [analysisResult, electricalGraph]);
+  }, [analysisResult, electricalGraph, preparedLayout]);
 
   if (analysisResult && analysisResult.components?.length > 0) {
     return (
@@ -102,11 +108,14 @@ const TYPE_COLORS = {
  * The symbol is rendered in local coordinates (centered at origin, along
  * the +x axis) and transformed to the correct screen position + rotation.
  */
-const LESSON_WIRE_COLOR = '#67e8f9';
-const LESSON_NODE_COLORS = { reference: '#86efac', unknown: '#c4b5fd', kcl: '#fcd34d', node: LESSON_WIRE_COLOR };
+const CONDUCTOR_COLOR = '#64758b';
+const CONDUCTOR_WIDTH = 1.5;
+const SUPERNODE_COLOR = '#fbbf24';
+const LESSON_FOCUS_COLOR = '#e9bb70';
+const LESSON_NODE_COLORS = { reference: '#86efac', unknown: '#c4b5fd', kcl: '#fcd34d', node: LESSON_FOCUS_COLOR, supernode: SUPERNODE_COLOR };
 const CURRENT_ARROW_COLORS = { reference: '#a5b4fc', actual: '#fdba74' };
 
-function ComponentSymbol({ comp, selected, highlighted = false, dimmed = false }) {
+function ComponentSymbol({ comp, selected, highlighted = false, supernodeSource = false, sourceState, readOnly = false }) {
   const { x1, y1, x2, y2, type, id, posTerminal, status, labelPosition } = comp;
   // The value is drawn exactly as read; an unreadable unit is flagged beside it
   // instead of being dropped or guessed.
@@ -120,15 +129,15 @@ function ComponentSymbol({ comp, selected, highlighted = false, dimmed = false }
   const mx = comp.center?.x ?? Math.round((x1 + x2) / 2);
   const my = comp.center?.y ?? Math.round((y1 + y2) / 2);
 
-  const color = highlighted ? LESSON_WIRE_COLOR : (TYPE_COLORS[type] ?? TYPE_COLORS.unknown);
-  const leadColor = highlighted ? LESSON_WIRE_COLOR : '#475569';
-  const symbolOpacity = dimmed && !selected ? 0.62 : undefined;
+  const focusColor = sourceState === 'active' ? '#86efac' : supernodeSource || sourceState ? SUPERNODE_COLOR : LESSON_FOCUS_COLOR;
+  const color = TYPE_COLORS[type] ?? TYPE_COLORS.unknown;
 
   // All geometry comes from the layout engine: rotation, symbol extent and the
   // terminal points. The renderer never re-derives them, so the drawn symbol,
   // its leads, and the wire endpoints cannot disagree.
   const terminalAngle = (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
-  const angle = type === 'current_source' ? terminalAngle : comp.angle ?? terminalAngle;
+  const resistor = type === 'resistor' ? resistorGeometry(comp) : null;
+  const angle = resistor?.angle ?? (type === 'ground' ? terminalAngle - 90 : type === 'current_source' ? terminalAngle : comp.angle ?? terminalAngle);
   const currentArrow = comp.currentDirection && {
     ...comp.currentDirection,
     reversed: comp.currentDirection.fromTerminal === comp.terminals[1].label,
@@ -138,7 +147,7 @@ function ComponentSymbol({ comp, selected, highlighted = false, dimmed = false }
   // applied to the symbol's length only: the height, the stroke weight and the
   // glyph's proportions across its axis stay at full size, which is what keeps a
   // short component legible.
-  const symbolScale = comp.symbolScale ?? 1;
+  const symbolScale = resistor?.scale ?? comp.symbolScale ?? 1;
 
   // Leads run along the terminal vector (terminal 0 → terminal 1), which is the
   // axis the layout built the symbol on. One end of each lead is the terminal,
@@ -148,10 +157,8 @@ function ComponentSymbol({ comp, selected, highlighted = false, dimmed = false }
   const span = Math.hypot(x2 - x1, y2 - y1) || 1;
   const tx = (x2 - x1) / span;
   const ty = (y2 - y1) / span;
-  const sx1 = mx - tx * symbolHalf;
-  const sy1 = my - ty * symbolHalf;
-  const sx2 = mx + tx * symbolHalf;
-  const sy2 = my + ty * symbolHalf;
+  const { x: sx1, y: sy1 } = resistor?.body[0] ?? { x: mx - tx * symbolHalf, y: my - ty * symbolHalf };
+  const { x: sx2, y: sy2 } = resistor?.body.at(-1) ?? { x: mx + tx * symbolHalf, y: my + ty * symbolHalf };
 
 
   const perpX = -ty;
@@ -161,13 +168,15 @@ function ComponentSymbol({ comp, selected, highlighted = false, dimmed = false }
   const labelY = labelPosition?.y ?? Math.round(my + perpY * 36);
 
   // Uncertainty border color
-  const borderColor = status === 'uncertain' ? '#ef4444' : status === 'probable' ? '#f59e0b' : '#2d3748';
+  const borderColor = status === 'uncertain' ? '#ef4444' : highlighted ? focusColor : status === 'probable' ? '#f59e0b' : '#2d3748';
 
   // Selection highlight box (symbolBox)
   const selBox = selected && comp.symbolBox ? comp.symbolBox : null;
 
   return (
-    <g className="rc-comp" data-comp-id={id} data-lesson-highlight={highlighted ? 'component' : undefined} style={{ cursor: 'move' }}>
+    <g className="rc-comp" data-comp-id={readOnly ? undefined : id} data-superposition-source={readOnly ? undefined : sourceState}
+      data-lesson-highlight={readOnly ? undefined : supernodeSource ? 'supernode-source' : highlighted ? 'component' : undefined}
+      style={readOnly ? undefined : { cursor: 'move' }}>
       {/* Invisible hit area — covers the full draw box (symbol + leads) so the
           user doesn't need to click precisely on a thin line. */}
       {comp.drawBox && (
@@ -199,14 +208,14 @@ function ComponentSymbol({ comp, selected, highlighted = false, dimmed = false }
 
       {/* leader wires — connect component symbol boundary cleanly to terminals with zero gap */}
       {type !== 'wire' && (
-        <g opacity={symbolOpacity}>
-          <line x1={x1} y1={y1} x2={sx1} y2={sy1} stroke={leadColor} strokeWidth={highlighted ? 3.5 : 2.5} strokeLinecap="round" />
-          <line x1={sx2} y1={sy2} x2={x2} y2={y2} stroke={leadColor} strokeWidth={highlighted ? 3.5 : 2.5} strokeLinecap="round" />
+        <g stroke={CONDUCTOR_COLOR} strokeWidth={CONDUCTOR_WIDTH} strokeLinecap="round" data-component-leads="">
+          <line x1={x1} y1={y1} x2={sx1} y2={sy1} vectorEffect="non-scaling-stroke" />
+          {type !== 'ground' && <line x1={sx2} y1={sy2} x2={x2} y2={y2} vectorEffect="non-scaling-stroke" />}
         </g>
       )}
 
       {/* symbol */}
-      <g opacity={symbolOpacity} transform={`translate(${mx} ${my}) rotate(${angle}) scale(${symbolScale} 1)`}>
+      <g transform={`translate(${mx} ${my}) rotate(${angle}) scale(${symbolScale} 1)`}>
         {renderSymbol(type, color, aIsPos, bIsPos, currentArrow)}
       </g>
 
@@ -220,11 +229,11 @@ function ComponentSymbol({ comp, selected, highlighted = false, dimmed = false }
           rx={LABEL_CARD.cornerRadius}
           fill="#111827"
           stroke={borderColor}
-          strokeWidth={status === 'uncertain' || status === 'probable' ? 1.5 : 1}
+          strokeWidth={highlighted || status === 'uncertain' || status === 'probable' ? 1.5 : 1}
         />
         {/* Positions are unchanged for a plain card; the extra line only shifts
             them on a card that reserves room for the warning. */}
-        <text x="0" y={warned ? -card.height / 2 + 7 : -3} fill="#64748b" fontSize="8" fontWeight="600" textAnchor="middle" fontFamily="var(--font-mono)">
+          <text x="0" y={warned ? -card.height / 2 + 7 : -3} fill={highlighted ? focusColor : '#64748b'} fontSize="8" fontWeight="600" textAnchor="middle" fontFamily="var(--font-mono)">
           {id}{status === 'uncertain' ? ' ?' : status === 'probable' ? ' ~' : ''}
         </text>
         <text x="0" y={warned ? -card.height / 2 + 17 : card.height / 2 - 6} fill={color} fontSize="10" fontWeight="700" textAnchor="middle" fontFamily="var(--font-mono)">
@@ -243,13 +252,77 @@ function ComponentSymbol({ comp, selected, highlighted = false, dimmed = false }
   );
 }
 
+function DeactivatedSource({ component, state }) {
+  const { id, x1, y1, x2, y2, labelPosition } = component;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const span = Math.hypot(dx, dy);
+  const mx = (x1 + x2) / 2;
+  const my = (y1 + y2) / 2;
+  const gap = Math.min(8, span / 4);
+  const left = { x: mx - dx * gap / span, y: my - dy * gap / span };
+  const right = { x: mx + dx * gap / span, y: my + dy * gap / span };
+  const label = labelPosition ?? { x: mx - dy * 23 / span, y: my + dx * 23 / span };
+  return (
+    <g data-case-component={id} data-case-replacement={state} aria-label={`${id} ideal ${state}`}>
+      {state === 'short'
+        ? <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#fbbf24" strokeWidth="3" />
+        : <g stroke="#fbbf24" strokeWidth="2.5">
+          <line x1={x1} y1={y1} x2={left.x} y2={left.y} />
+          <line x1={right.x} y1={right.y} x2={x2} y2={y2} />
+          <circle cx={left.x} cy={left.y} r="3" fill="#0c111a" />
+          <circle cx={right.x} cy={right.y} r="3" fill="#0c111a" />
+        </g>}
+      <text x={label.x} y={label.y} textAnchor="middle" dominantBaseline="central" fill="#fcd34d" fontSize="10">{id} {state}</text>
+    </g>
+  );
+}
+
+function SuperpositionSchematic({ layout, nodeLabels, sourceCase, sourceStates, focused }) {
+  const { bounds, components, junctions, crossings, renderValidation } = layout;
+  const states = sourceStates ?? new Map();
+  const geometryVerified = renderValidation?.isValid === true && !crossings.length &&
+    states.size === sourceCase.inactive.length + 1 && sourceCase.inactive.every(({ componentId }) => {
+      const part = components.find(({ id }) => id === componentId);
+      return part && Math.hypot(part.x2 - part.x1, part.y2 - part.y1) >= 12;
+    });
+  if (!geometryVerified) return <p className="diagram-caption-hint" role="status">
+    The lesson lists the single-source replacements. This layout could not be verified for a separate circuit view.
+  </p>;
+  return (
+    <figure className="dc-superposition-schematic">
+      <figcaption>Single-source circuit · {sourceCase.active.componentId} active</figcaption>
+      <svg viewBox={`0 0 ${bounds.width} ${bounds.height}`} role="img" aria-label={`Single-source circuit with ${sourceCase.active.componentId} active`}>
+        {(layout.allWires ?? layout.wires).map(({ id, points }) => (
+          <polyline key={id} points={points.map(({ x, y }) => `${x},${y}`).join(' ')}
+            fill="none" stroke={CONDUCTOR_COLOR} strokeWidth={CONDUCTOR_WIDTH} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+        ))}
+        {components.map((component) => {
+          const state = states.get(component.id);
+          return state && state !== 'active' ? <DeactivatedSource key={component.id} component={component} state={state} />
+            : <g key={component.id} data-case-component={component.id} data-case-state={state}>
+              <ComponentSymbol comp={component} highlighted={focused.has(component.id)} sourceState={state} readOnly />
+            </g>;
+        })}
+        {junctions.filter((j) => j.isRealJunction !== false && j.isJunction !== false).map(({ id, x, y }) => (
+          <circle key={id} cx={x} cy={y} r="4" fill="#818cf8" />
+        ))}
+        {nodeLabels.map(({ nodeId, anchor, box }) => <g key={nodeId}>
+          {!anchor.junctionId && <circle cx={anchor.x} cy={anchor.y} r="3" fill="#a5b4fc" />}
+          <text x={box.minX} y={(box.minY + box.maxY) / 2} dominantBaseline="central" fill="#a5b4fc" fontSize="11">{nodeId}</text>
+        </g>)}
+      </svg>
+    </figure>
+  );
+}
+
 /** Returns SVG for a component symbol in local coordinates (origin-centered, along +x). */
 function renderSymbol(type, color, aIsPos, bIsPos, currentArrow) {
   switch (type) {
     case 'resistor':
       return (
         <polyline
-          points="-26,0 -20,-9 -12,9 -4,-9 4,9 12,-9 20,9 26,0"
+          points={RESISTOR_ZIGZAG}
           fill="none"
           stroke={color}
           strokeWidth="3"
@@ -406,6 +479,39 @@ const ENDPOINT_HANDLE_HIT = 10;
 // Colour of the snap preview. Deliberately outside the wire/junction palette
 // (indigo #818cf8, blue #38bdf8) so a preview can never read as a real join.
 const SNAP_PREVIEW_COLOR = '#f59e0b';
+const MESH_REFERENCE_COLOR = '#c4b5fd';
+
+function MeshStudyOverlay({ boundary, meshes }) {
+  const wireEdges = boundary.filter(({ componentId }) => !componentId);
+  return (
+    <g pointerEvents="none" data-mesh-highlight={meshes.map(({ id }) => id).join(' ')}>
+      <polygon points={boundary.map(({ a }) => `${a.x},${a.y}`).join(' ')}
+        fill={MESH_REFERENCE_COLOR} fillOpacity="0.08" />
+      {wireEdges.map(({ id, a, b }) => <line key={id} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+        stroke={MESH_REFERENCE_COLOR} strokeWidth="1.8" opacity="0.75" strokeLinecap="round" vectorEffect="non-scaling-stroke" />)}
+    </g>
+  );
+}
+
+function MeshCurrentReferences({ arrows }) {
+  if (!arrows.length) return null;
+  return (
+    <g pointerEvents="none" color="#fbbf58">
+      {arrows.map(({ meshId, emphasized, clockwise, center, radius, start, end, head: [left, right], fontSize }) => (
+        <g key={meshId} role="img" data-mesh-current-arrow={meshId} data-mesh-emphasis={emphasized ? 'active' : 'related'}
+          aria-label={`Reference mesh current ${meshId}, ${clockwise ? 'clockwise' : 'counterclockwise'}`}
+          opacity={emphasized ? 1 : 0.57}>
+          <path d={`M ${start.x} ${start.y} A ${radius} ${radius} 0 1 ${Number(clockwise)} ${end.x} ${end.y}
+            M ${left.x} ${left.y} L ${end.x} ${end.y} L ${right.x} ${right.y}`}
+            fill="none" stroke="currentColor" strokeWidth={emphasized ? 2 : 1.5} strokeLinecap="round" strokeLinejoin="round" />
+          <text x={center.x} y={center.y} textAnchor="middle" dominantBaseline="central"
+            fontSize={fontSize} fontWeight="600" fill="currentColor">I<tspan baselineShift="sub" fontSize="74%">{meshId}</tspan></text>
+        </g>
+      ))}
+    </g>
+  );
+}
+
 
 function ReconstructedDiagram({
   layout, reconstructionKey, analysisResult, electricalGraph, lessonStep, onSaveCircuit, imageId, savedCircuit,
@@ -464,10 +570,20 @@ function ReconstructedDiagram({
   }, [labelBounds]);
   const nodeLabels = useMemo(() => editedLayout?.ok ? placeNodeLabels(editedLayout, nodeFontSize) : [],
     [editedLayout, nodeFontSize]);
+  const meshArrows = useMemo(
+    () => placeMeshCurrentArrows(lessonHighlights.meshArrowFaces, editedLayout, nodeLabels, Math.max(13, nodeFontSize)),
+    [editedLayout, lessonHighlights, nodeLabels, nodeFontSize],
+  );
   const currentArrows = useMemo(
     () => placeDcCurrentArrows(editedLayout, lessonStep, lessonHighlights, nodeLabels),
     [editedLayout, lessonStep, lessonHighlights, nodeLabels],
   );
+  const particleRuns = useMemo(() => stitchResistorParticleRuns(editedLayout, lessonStep?.branchFlows,
+    mapDcCurrentParticles(electricalGraph, editedLayout, lessonStep)), [electricalGraph, editedLayout, lessonStep]);
+  const [flowPaused, setFlowPaused] = useState(false);
+  const [flowRate, setFlowRate] = useState('normal');
+  const [showParticles, setShowParticles] = useState(true);
+  const largestFlow = particleRuns.reduce((max, { amperes }) => Math.max(max, amperes), 0);
 
   // --- Edit / Save mode --------------------------------------------------
   const startEditing = useCallback(() => {
@@ -901,10 +1017,39 @@ function ReconstructedDiagram({
         </div>
       )}
 
-      {currentArrows.length > 0 && (
-        <p className="diagram-caption-hint">
-          {lessonStep.currentArrowMode === 'reference' ? 'Reference current directions' : 'Solved conventional-current directions'}
+      {lessonStep?.meshRegion ? (
+        <p className="diagram-caption-hint" role="status">
+          {lessonHighlights.meshBoundary
+            ? lessonStep.meshRegion.length === 1 ? 'Mesh-current reference direction' : 'Verified supermesh boundary'
+            : 'This loop is shown algebraically in the lesson because its path could not be verified on the schematic.'}
         </p>
+      ) : (currentArrows.length > 0 || particleRuns.length > 0) && (
+        <p className="diagram-caption-hint">
+          {lessonStep.sourceCase ? `Current contribution from ${lessonStep.sourceCase.active.componentId} shown on the original layout`
+            : lessonStep.currentArrowMode === 'reference' ? 'Reference current directions' : 'Solved conventional-current directions'}
+        </p>
+      )}
+      {particleRuns.length > 0 && (
+        <div className="dc-current-playback">
+          <div className="dc-current-flow-tools" role="group" aria-label="Current animation">
+            <button type="button" className="rc-action-btn" disabled={!showParticles}
+              aria-label={flowPaused ? 'Play current animation' : 'Pause current animation'}
+              onClick={() => setFlowPaused((paused) => !paused)}>{flowPaused ? 'Play' : 'Pause'}</button>
+            <label>Speed
+              <select value={flowRate} disabled={!showParticles} onChange={(event) => setFlowRate(event.target.value)}>
+                <option value="slow">Slow</option>
+                <option value="normal">Normal</option>
+                <option value="fast">Fast</option>
+              </select>
+            </label>
+            <label>
+              <input type="checkbox" checked={showParticles} onChange={(event) => setShowParticles(event.target.checked)} />
+              Show particles
+            </label>
+          </div>
+          <p className="diagram-caption-hint dc-current-flow-tools">Faster dashes indicate more conventional current. Their speed is illustrative and does not represent electron drift speed.</p>
+          <p className="diagram-caption-hint dc-current-motion-note">Reduced motion is on. Static arrows show the available current directions.</p>
+        </div>
       )}
 
       <div
@@ -951,9 +1096,8 @@ function ReconstructedDiagram({
               Each wire has a wide invisible hit polyline for easy clicking
               and a visible polyline on top with pointerEvents disabled. */}
           {displayWires.filter((w) => w.points && w.points.length >= 2).map((w) => {
-            const isSel = selectedWire === w.id;
+            const isSel = isEditing && selectedWire === w.id;
             const highlighted = lessonHighlights.wireIds.has(w.id);
-            const baseOpacity = w.confidence < 0.6 ? 0.5 : 0.9;
             return (
               <g key={`wire-${w.id}`} data-wire-id={w.id} data-lesson-highlight={highlighted ? 'wire' : undefined} style={{ cursor: 'pointer' }}>
                 {/* Invisible hit area — 16px wide stroke makes thin wires easy to grab */}
@@ -969,32 +1113,50 @@ function ReconstructedDiagram({
                 <polyline
                   points={w.points.map((p) => `${p.x},${p.y}`).join(' ')}
                   fill="none"
-                  stroke={isSel ? '#38bdf8' : highlighted ? LESSON_WIRE_COLOR : (w.isCrossing || (w.confidence != null && w.confidence < 0.6) ? '#94a3b8' : '#475569')}
-                  strokeWidth={isSel || highlighted ? 4 : 2.5}
+                  stroke={isSel ? '#9babc1' : CONDUCTOR_COLOR}
+                  strokeWidth={isSel ? 2.2 : CONDUCTOR_WIDTH}
+                  vectorEffect="non-scaling-stroke"
                   strokeLinejoin="round"
                   strokeLinecap="round"
                   strokeDasharray={w.isCrossing || (w.confidence != null && w.confidence < 0.7) ? '5 4' : undefined}
-                  opacity={isSel || highlighted ? 1 : baseOpacity * (lessonHighlights.active ? 0.65 : 1)}
                   pointerEvents="none"
                 />
               </g>
             );
           })}
 
+          {lessonHighlights.meshBoundary && (
+            <MeshStudyOverlay boundary={lessonHighlights.meshBoundary} meshes={lessonStep.meshRegion} />
+          )}
+          <MeshCurrentReferences arrows={meshArrows} />
+
           {/* Wire-type components as plain conductors */}
           {components.filter((c) => c.type === 'wire').map((c) => (
-            <line key={`wcomp-${c.id}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke="#475569" strokeWidth="2.5" />
+            <line key={`wcomp-${c.id}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2}
+              stroke={CONDUCTOR_COLOR} strokeWidth={CONDUCTOR_WIDTH} vectorEffect="non-scaling-stroke" />
           ))}
 
-          <g aria-hidden="true" pointerEvents="none">
-            {currentArrows.filter((arrow) => arrow.flowPath).map((arrow) => (
-              <polyline key={arrow.branchId} className="dc-current-flow"
-                data-current-flow-branch-id={arrow.branchId} data-current-flow-wire-id={arrow.wireId}
-                points={arrow.flowPath.map(({ x, y }) => `${x},${y}`).join(' ')}
-                fill="none" stroke={CURRENT_ARROW_COLORS.actual} strokeWidth="1.7"
-                strokeLinecap="round" strokeLinejoin="round" />
-            ))}
-          </g>
+          {/* Component bodies sit behind the current paths that cross resistors. */}
+          {components.filter((c) => c.type !== 'wire').map((c) => (
+            <ComponentSymbol key={c.id} comp={c} selected={c.id === selectedId}
+              highlighted={lessonHighlights.componentIds.has(c.id)}
+              supernodeSource={lessonHighlights.supernodeSourceIds?.has(c.id)} sourceState={lessonHighlights.sourceStates?.get(c.id)} />
+          ))}
+
+          {showParticles && particleRuns.length > 0 && (
+            <g className="dc-current-particles" aria-hidden="true" pointerEvents="none"
+              style={{ '--dc-flow-play-state': flowPaused ? 'paused' : 'running', '--dc-flow-spacing': `${PARTICLE_SPACING}px` }}>
+              {particleRuns.map(({ id, nodeId, amperes, points, resistorIds }) => (
+                <polyline key={id} className="dc-current-flow" data-current-flow-net={nodeId}
+                  data-current-flow-amps={amperes}
+                  data-current-flow-resistors={resistorIds?.join(' ')}
+                  points={points.map(({ x, y }) => `${x},${y}`).join(' ')}
+                  style={{ '--dc-flow-duration': `${dcParticleDuration(amperes, largestFlow, flowRate)}s` }}
+                  fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke" />
+              ))}
+            </g>
+          )}
 
           {/* Crossing markers (semicircular bridge jump for unconnected crossings) */}
           {crossings.map((cx, i) => {
@@ -1010,17 +1172,23 @@ function ReconstructedDiagram({
             return (
               <g key={cx.id || `cross-${i}`} className="rc-crossing">
                 <circle cx={pt.x} cy={pt.y} r="6" fill="#0c111a" stroke="#94a3b8" strokeWidth="1.2" />
-                <path d={`M ${pt.x - 5} ${pt.y} A 5 5 0 0 1 ${pt.x + 5} ${pt.y}`} fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" />
+                <path d={`M ${pt.x - 5} ${pt.y} A 5 5 0 0 1 ${pt.x + 5} ${pt.y}`} fill="none" stroke={CONDUCTOR_COLOR}
+                  strokeWidth={CONDUCTOR_WIDTH} strokeLinecap="round" vectorEffect="non-scaling-stroke" />
               </g>
             );
           })}
 
-          {/* Non-wire components */}
-          {components.filter((c) => c.type !== 'wire').map((c) => {
-            const highlighted = lessonHighlights.componentIds.has(c.id);
-            return <ComponentSymbol key={c.id} comp={c} selected={c.id === selectedId}
-              highlighted={highlighted} dimmed={lessonHighlights.active && !highlighted} />;
-          })}
+          {lessonHighlights.terminalKeys?.size > 0 && (
+            <g pointerEvents="none">
+              {components.flatMap(({ id, terminals }) => terminals.map((terminal) => {
+                const key = termKey(id, terminal.label);
+                return lessonHighlights.terminalKeys.has(key) && (
+                  <circle key={key} data-lesson-terminal={key} cx={terminal.x} cy={terminal.y} r="4.5"
+                    fill="none" stroke={LESSON_FOCUS_COLOR} strokeWidth="1.5" />
+                );
+              }))}
+            </g>
+          )}
 
           {/* Junction dots — one per physical branching point, so a net that
               branches in two places shows two dots. Only the node's anchor dot
@@ -1215,6 +1383,9 @@ function ReconstructedDiagram({
           })()}
         </svg>
       </div>
+
+      {lessonStep?.sourceCase?.inactive.length > 0 && <SuperpositionSchematic layout={editedLayout} nodeLabels={nodeLabels}
+        sourceCase={lessonStep.sourceCase} sourceStates={lessonHighlights.sourceStates} focused={lessonHighlights.componentIds} />}
 
       {/* Uncertainty notes */}
       {uncertain.length > 0 && (

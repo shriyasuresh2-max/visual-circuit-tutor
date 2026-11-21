@@ -208,10 +208,10 @@ describe('solveDcCircuit stamps independent ideal current sources into KCL', () 
       { I: [4 / 3, 1], V: [8, -5 / 3], R1: [4 / 3, 2 / 3], R2: [20 / 3, 5 / 3] },
       [[['I', 1], ['R2', 1], ['V', -1]], [['I', 1], ['R1', -1]]]);
     const lesson = buildDcLesson(graph, result, parseDcQuestion(''));
-    const substituted = lesson.steps.find(({ id }) => id === 'substitute').equations;
+    const substituted = lesson.steps.filter(({ id }) => ['constraints', 'kcl'].includes(id)).flatMap(({ workedEquations }) => workedEquations);
     expect(substituted.filter(({ kind }) => kind === 'source-constraint')).toHaveLength(1);
     const signedTerms = substituted.flatMap(({ terms }) => terms ?? []).filter(({ branchId }) => branchId === 'I');
-    expect(signedTerms.map(({ sign, sourceCurrent }) => [sign, sourceCurrent])).toEqual([[1, 1], [-1, 1]]);
+    expect(signedTerms.map(({ sign, sourceCurrent }) => [sign, sourceCurrent])).toEqual([[-1, 1]]);
   });
 
   it('reports zero drop when both current-source terminals share one node', () => {

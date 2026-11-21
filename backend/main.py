@@ -372,6 +372,10 @@ FOR EACH COMPONENT you must report:
   if no value is legibly printed near the component
 - Its terminals. For polarity sources use terminal labels "+" and "−". For
   two-terminal passives use "A" and "B". Keep terminal labels consistent.
+- A ground symbol has exactly one terminal, "A", where its lead meets the
+  conductor. Include it in that conductor's node. The bars or triangle are
+  a reference marker and have no second terminal. Do not connect separate
+  conductor groups solely because they have ground symbols.
 - A confidence score (0–1) — use < 0.7 for anything uncertain
 - centre: the normalised (x, y) position of the component's centre in the image
 - orientation: rotation in degrees (0 = horizontal left-to-right, 90 = vertical
@@ -489,7 +493,11 @@ def flag_connectivity_issues(result: CircuitAnalysis) -> None:
         for terminal in component.terminals
     }
     memberships: dict[str, set[str]] = {}
-    issues: list[str] = []
+    issues: list[str] = [
+        f"Ground marker {component.id} must have one conductor terminal."
+        for component in result.components
+        if component.type == ComponentType.ground and len(component.terminals) != 1
+    ]
     review_notes: list[str] = []
     group_sizes: dict[str, int] = {}
     for node in result.nodes:

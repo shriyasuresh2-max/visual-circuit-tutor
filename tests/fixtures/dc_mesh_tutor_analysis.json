@@ -1,0 +1,155 @@
+{
+  "contains_circuit": true,
+  "is_circuit": true,
+  "circuit_type": "mixed",
+  "components": [
+    {
+      "id": "I1",
+      "type": "current_source",
+      "visible_value": "2 A",
+      "confidence": 0.99,
+      "terminals": [
+        {
+          "label": "A",
+          "position": {
+            "x": 0.5,
+            "y": 0.33
+          }
+        },
+        {
+          "label": "B",
+          "position": {
+            "x": 0.5,
+            "y": 0.67
+          }
+        }
+      ],
+      "currentDirection": {
+        "fromTerminal": "B",
+        "toTerminal": "A"
+      }
+    },
+    {
+      "id": "V1",
+      "type": "voltage_source",
+      "visible_value": "6 V",
+      "confidence": 0.99,
+      "terminals": [
+        {
+          "label": "+",
+          "position": {
+            "x": 0.2,
+            "y": 0.33
+          }
+        },
+        {
+          "label": "-",
+          "position": {
+            "x": 0.2,
+            "y": 0.46
+          }
+        }
+      ]
+    },
+    {
+      "id": "R1",
+      "type": "resistor",
+      "visible_value": "2 ohm",
+      "confidence": 0.99,
+      "terminals": [
+        {
+          "label": "A",
+          "position": {
+            "x": 0.2,
+            "y": 0.54
+          }
+        },
+        {
+          "label": "B",
+          "position": {
+            "x": 0.2,
+            "y": 0.67
+          }
+        }
+      ]
+    },
+    {
+      "id": "R2",
+      "type": "resistor",
+      "visible_value": "3 ohm",
+      "confidence": 0.99,
+      "terminals": [
+        {
+          "label": "A",
+          "position": {
+            "x": 0.8,
+            "y": 0.33
+          }
+        },
+        {
+          "label": "B",
+          "position": {
+            "x": 0.8,
+            "y": 0.46
+          }
+        }
+      ]
+    },
+    {
+      "id": "R3",
+      "type": "resistor",
+      "visible_value": "3 ohm",
+      "confidence": 0.99,
+      "terminals": [
+        {
+          "label": "A",
+          "position": {
+            "x": 0.8,
+            "y": 0.54
+          }
+        },
+        {
+          "label": "B",
+          "position": {
+            "x": 0.8,
+            "y": 0.67
+          }
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "upper",
+      "members": [
+        "I1.A",
+        "V1.+",
+        "R2.A"
+      ]
+    },
+    {
+      "id": "lower",
+      "members": [
+        "I1.B",
+        "R1.B",
+        "R3.B"
+      ]
+    },
+    {
+      "id": "left",
+      "members": [
+        "V1.-",
+        "R1.A"
+      ]
+    },
+    {
+      "id": "right",
+      "members": [
+        "R2.B",
+        "R3.A"
+      ]
+    }
+  ],
+  "image_width": 1000,
+  "image_height": 700
+}

@@ -3,6 +3,7 @@ import { buildGraph } from './electricalGraph.js';
 import { solveDcCircuit } from './dcSolver.js';
 import { parseDcQuestion } from './dcQuestions.js';
 import { buildDcLesson } from './dcLesson.js';
+import { lessonEquationTex } from './dcLessonMath.js';
 
 function graph(parts, groups, extra = {}) {
   return buildGraph({
@@ -42,9 +43,10 @@ describe('buildDcLesson', () => {
       const sourceCurrent = new Map(result.branches.filter((branch) => branch.sourceVoltage != null)
         .map(({ componentId, current }) => [componentId, current]));
 
-      const kcl = step(lesson, 'kcl').equations;
+      const kcl = lesson.steps.flatMap(({ equations }) => equations.filter(({ kind }) => kind === 'kcl'));
+      const knownNodes = step(lesson, 'constraints').finalAnswer.map(({ id }) => id);
       expect(kcl.map(({ nodeId }) => nodeId)).toEqual(result.nodes
-        .filter(({ id }) => id !== result.referenceNodeId).map(({ id }) => id));
+        .filter(({ id }) => id !== result.referenceNodeId && !knownNodes.includes(id)).map(({ id }) => id));
       for (const equation of kcl) {
         const expected = result.branches
           .filter(({ fromNodeId, toNodeId }) => fromNodeId !== toNodeId &&
@@ -62,9 +64,15 @@ describe('buildDcLesson', () => {
         expect(rule.toTerminal).toBe('−');
         expect(potentials.get(rule.fromNodeId) - potentials.get(rule.toNodeId)).toBeCloseTo(rule.equals, 11);
       }
-      expect(step(lesson, 'substitute').equations.every((equation) => equation.substituted)).toBe(true);
-      expect(step(lesson, 'substitute').equations.some((equation) =>
-        equation.expression.includes('Ω') && equation.expression.includes('0 V'))).toBe(true);
+      expect(step(lesson, 'constraints').workedEquations.every(({ staged }) => staged)).toBe(true);
+      for (const { workedEquations } of lesson.steps.filter(({ id }) => id.startsWith('kcl'))) {
+        expect(workedEquations.every((equation) => lessonEquationTex(equation, 'substitution').includes('\\Omega'))).toBe(true);
+      }
+      const balances = lesson.steps.at(-1).equations.filter(({ kind }) => kind === 'nodal-source-current');
+      expect(balances).toHaveLength(sourceCurrent.size);
+      for (const equation of balances) {
+        expect(equation.terms.reduce((sum, term) => sum + term.sign * term.value, 0)).toBeCloseTo(sourceCurrent.get(equation.id), 11);
+      }
       for (const entry of lesson.steps) {
         expect(entry.nodeIds.every((id) => potentials.has(id))).toBe(true);
         expect(entry.branchIds).toEqual(entry.componentIds);
@@ -77,6 +85,35 @@ describe('buildDcLesson', () => {
       }
     },
   );
+
+  it('adds only the steps needed for a fixed voltage, one unknown, and coupled equations', () => {
+    const twoNodes = graph([['E', '12 V', 'battery'], ['R', '4 Ω']], [['E.+', 'R.A'], ['E.−', 'R.B']]);
+    const series = graph([['E', '12 V', 'battery'], ['R1', '2 Ω'], ['R2', '4 Ω']],
+      [['E.+', 'R1.A'], ['R1.B', 'R2.A'], ['E.−', 'R2.B']]);
+    const lessons = [twoNodes, series, bridge()].map((network) => buildDcLesson(network, solveDcCircuit(network), parseDcQuestion('')));
+    expect(lessons.map(({ steps }) => steps.length)).toEqual([3, 5, 7]);
+    expect(lessons[0].steps[0].directionEquations).toHaveLength(2);
+    const isolation = step(lessons[1], 'solve').equations[0];
+    expect(isolation).toMatchObject({ kind: 'nodal-isolate', rhs: 6, coefficient: 0.75, value: 8 });
+    const rows = step(lessons[2], 'collect').equations;
+    const elimination = lessons[2].steps.find(({ id }) => id.startsWith('eliminate-')).equations[0];
+    expect(elimination.terms).toHaveLength(1);
+    expect(elimination.rhs).toBeCloseTo(rows[1].rhs - elimination.factor * rows[0].rhs, 12);
+    for (const equation of step(lessons[2], 'solve').equations) {
+      const numerator = equation.rhs - equation.terms.reduce((sum, term) => sum + term.coefficient * term.voltage, 0);
+      expect(numerator / equation.coefficient).toBeCloseTo(equation.value, 12);
+    }
+  });
+
+  it('teaches a passive network without source instructions or moving currents', () => {
+    const passive = graph([['P', '2 Ω'], ['Q', '4 Ω']], [['P.A', 'Q.A'], ['P.B', 'Q.B']]);
+    const lesson = buildDcLesson(passive, solveDcCircuit(passive), parseDcQuestion(''));
+    expect(lesson.steps.map(({ id }) => id)).toEqual(['reference', 'kcl', 'solve', 'answer']);
+    const end = lesson.steps.at(-1);
+    expect(end.explanation).not.toContain('source');
+    expect(end.finalAnswer.every(({ value }) => value === 0)).toBe(true);
+    expect(end.currentDirections.every(({ effectivelyZero }) => effectivelyZero)).toBe(true);
+  });
 
   it.each([
     ['Current through X', 'branch-current', 'A', 1],
@@ -131,7 +168,7 @@ describe('buildDcLesson', () => {
     const network = bridge();
     const result = solveDcCircuit(network);
     expect(buildDcLesson(network, result, parseDcQuestion('Current through X using mesh analysis')))
-      .toMatchObject({ ok: false, message: expect.stringMatching(/method is unavailable/), steps: [] });
+      .toMatchObject({ ok: false, message: expect.stringMatching(/Select Mesh Analysis/), steps: [] });
     const intent = parseDcQuestion('Current through X');
     expect(buildDcLesson(network, { ok: false }, intent)).toMatchObject({ ok: false, steps: [] });
     expect(buildDcLesson({ ...network, incomplete: true }, result, intent)).toMatchObject({ ok: false, steps: [] });

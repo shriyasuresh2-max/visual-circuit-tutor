@@ -2,11 +2,11 @@
  * AnalysisResultPanel — displays the structured circuit recognition output
  * returned by the /api/analyze-image endpoint.
  *
- * Shows loading, error, unsupported-format, and success states.
+ * Shows processing, error, and success states.
  * Does NOT replace or affect the existing circuit visualisation.
  */
 import React from 'react';
-import { Loader2, AlertCircle, CheckCircle2, Info, FileWarning } from 'lucide-react';
+import { Loader2, AlertCircle, CheckCircle2, Info } from 'lucide-react';
 import { valueDisplay } from '../circuit/componentValue.js';
 
 // Human-readable labels for enum values coming from the backend.
@@ -110,28 +110,13 @@ export default function AnalysisResultPanel({ analysisState }) {
   if (status === 'idle') return null;
 
   // --- Loading state -------------------------------------------------------
-  if (status === 'loading') {
+  const pendingLabels = { uploading: 'Uploading circuit image…', analyzing: 'Analyzing circuit image…',
+    reconstructing: 'Reconstructing and validating circuit…' };
+  if (pendingLabels[status]) {
     return (
-      <div className="analysis-panel analysis-panel--loading">
+      <div className="analysis-panel analysis-panel--loading" role="status">
         <Loader2 size={16} className="analysis-spinner" />
-        <span>Analysing circuit image…</span>
-      </div>
-    );
-  }
-
-  // --- SVG / unsupported format state -------------------------------------
-  if (status === 'unsupported') {
-    return (
-      <div className="analysis-panel analysis-panel--warning">
-        <FileWarning size={16} className="flex-shrink-0" />
-        <div>
-          <p className="analysis-panel-title">SVG format not supported by vision API</p>
-          <p className="analysis-panel-body">
-            SVG is a vector format. The Gemini vision model requires a raster
-            image. Upload a <strong>PNG, JPG, or WebP</strong> screenshot or
-            photo of your circuit instead.
-          </p>
-        </div>
+        <span>{pendingLabels[status]}</span>
       </div>
     );
   }
@@ -139,7 +124,7 @@ export default function AnalysisResultPanel({ analysisState }) {
   // --- Error state ---------------------------------------------------------
   if (status === 'error') {
     return (
-      <div className="analysis-panel analysis-panel--error">
+      <div className="analysis-panel analysis-panel--error" role="alert">
         <AlertCircle size={16} className="flex-shrink-0" />
         <div>
           <p className="analysis-panel-title">Analysis failed</p>
@@ -151,8 +136,8 @@ export default function AnalysisResultPanel({ analysisState }) {
 
   // --- Success state -------------------------------------------------------
   if (status === 'success' && result) {
-    const { contains_circuit, circuit_type, components, connections,
-            question_text, unclear_details, general_notes } = result;
+    const { contains_circuit, circuit_type, components, connections = [],
+            question_text, unclear_details = [], general_notes } = result;
 
     return (
       <div className="analysis-panel analysis-panel--success">
@@ -165,7 +150,7 @@ export default function AnalysisResultPanel({ analysisState }) {
           </span>
         </div>
 
-        {!contains_circuit && (
+        {contains_circuit === false && (
           <div className="analysis-not-circuit-notice">
             <Info size={14} />
             <span>No electrical circuit was detected in this image.</span>

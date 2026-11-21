@@ -89,7 +89,7 @@ function sanitizePoint(p) {
 
 function ensureTerminals(components) {
   return components.map((c) => {
-    const terms = Array.isArray(c.terminals) && c.terminals.length >= 2
+    const terms = c.type === 'ground' ? (c.terminals ?? []).slice(0, 1) : Array.isArray(c.terminals) && c.terminals.length >= 2
       ? c.terminals
       : [{ label: 'A', description: null, position: null }, { label: 'B', description: null, position: null }];
     return {
@@ -204,6 +204,7 @@ function buildAdjacency(components, nodeOf) {
   const comps = ensureTerminals(components);
   const adj = new Map();
   for (const c of comps) {
+    if (c.type === 'ground') continue;
     const [t0, t1] = c.terminals;
     const n0 = nodeOf.get(termKey(c.id, t0.label));
     const n1 = nodeOf.get(termKey(c.id, t1.label));
@@ -347,8 +348,6 @@ export function buildGraph(analysis) {
   // Build component entries with terminal → node mapping
   const graphComponents = comps.map((c) => {
     const [t0, t1] = c.terminals;
-    const na = nodeOf.get(termKey(c.id, t0.label));
-    const nb = nodeOf.get(termKey(c.id, t1.label));
 
     let posTerminal = null;
     if (SOURCE_TYPES.has(c.type)) {
@@ -502,6 +501,12 @@ export function buildGraph(analysis) {
     crossings,
     connections: sanitized.connections,
   });
+  for (const marker of sanitized.components.filter(({ type, terminals }) => type === 'ground' && terminals.length > 1)) {
+    validation.errors.push(`Ground marker ${marker.id} has multiple reported terminals. Verify its single conductor connection.`);
+  }
+  validation.isValid = validation.errors.length === 0;
+  const groundedNodes = new Set(graphComponents.filter(({ type }) => type === 'ground')
+    .flatMap(({ terminals }) => terminals.map(({ node }) => node)).filter(Boolean));
   const unresolvedTopology = new Set([
     'conflicting-terminal-assignment', 'declared-node-conflict',
     'junction-conflicts-with-evidence', 'junction-members-split',
@@ -526,19 +531,31 @@ export function buildGraph(analysis) {
     diagnostics,
     topology: { edges: topology.edges, provisional, diagnostics },
     validation,
+    ...(groundedNodes.size === 1 ? { referenceNodeId: [...groundedNodes][0] } : {}),
     hasGeometry,
     incomplete:
       Boolean(sanitized.reconstruction_incomplete) ||
       provisional.length > 0 ||
       diagnostics.some((diagnostic) => unresolvedTopology.has(diagnostic.code)) ||
-      hasOpenTerminals(nodes) ||
+      hasOpenTerminals(nodes, graphComponents) ||
       !validation.isValid,
     reconstruction_incomplete: Boolean(sanitized.reconstruction_incomplete),
   };
 }
 
-function hasOpenTerminals(nodes) {
-  return nodes.some((n) => n.members.length === 1);
+export function groundTerminalKeys(components) {
+  return new Set(components.filter((c) => c?.type === 'ground' && Array.isArray(c.terminals))
+    .flatMap((c) => c.terminals.map((t) => termKey(c.id, t?.label))));
+}
+
+function orphanTerminal(node, grounds) {
+  const electrical = node.members.filter((key) => !grounds.has(key));
+  return electrical.length === 1 ? electrical[0] : electrical.length === 0 ? node.members[0] : null;
+}
+
+function hasOpenTerminals(nodes, components) {
+  const grounds = groundTerminalKeys(components);
+  return nodes.some((node) => orphanTerminal(node, grounds));
 }
 
 /**
@@ -667,9 +684,10 @@ export function validateGraph(graph) {
     }
   }
 
-  // Check: every component has at least 2 terminals
   for (const c of components) {
-    if (!c.terminals || c.terminals.length < 2) {
+    if (c.type === 'ground' && c.terminals.length !== 1) {
+      errors.push(`Ground marker ${c.id} needs one verified terminal assignment.`);
+    } else if (c.type !== 'ground' && (!c.terminals || c.terminals.length < 2)) {
       warnings.push(`Component ${c.id} has fewer than 2 terminals`);
     }
     // Check: every terminal has a node
@@ -706,10 +724,10 @@ export function validateGraph(graph) {
   }
 
   // Check: no node has only one member (orphan terminal)
+  const grounds = groundTerminalKeys(components);
   for (const n of nodes) {
-    if (n.members.length === 1) {
-      warnings.push(`Node ${n.id} has only one member: ${n.members[0]} (possible orphan)`);
-    }
+    const terminal = orphanTerminal(n, grounds);
+    if (terminal) warnings.push(`Node ${n.id} has only one member: ${terminal} (possible orphan)`);
   }
 
   return {

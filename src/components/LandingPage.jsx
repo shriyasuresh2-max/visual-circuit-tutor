@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
-import { Upload, FileImage, ArrowRight, RefreshCw, AlertCircle } from 'lucide-react';
+import { Upload, FileImage, ArrowRight, Loader2, RefreshCw, AlertCircle } from 'lucide-react';
 import AnalysisResultPanel from './AnalysisResultPanel.jsx';
+import { analysisIsPending, canOpenWorkspace } from '../hooks/useCircuitAnalysis.js';
 
 export default function LandingPage({
   imageFile,
@@ -8,6 +9,7 @@ export default function LandingPage({
   onImageSelected,
   onImageRemoved,
   onContinueToWorkspace,
+  onRetryAnalysis,
   analysisState,
   questionText = '',
   onQuestionChange,
@@ -15,19 +17,35 @@ export default function LandingPage({
   const fileInputRef = useRef(null);
   const [dragActive, setDragActive] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
+  const pending = analysisIsPending(analysisState?.status);
+  const ready = canOpenWorkspace(analysisState, imageFile);
+  const actions = (
+    <div className="landing-action-buttons">
+      {analysisState?.status === 'error' && analysisState.canRetry && (
+        <button type="button" className="btn-replace-image" onClick={onRetryAnalysis}>Retry Analysis</button>
+      )}
+      <button type="button" onClick={onContinueToWorkspace} className="btn-continue-workspace"
+        disabled={!ready} aria-busy={pending}>
+        <span>{pending ? 'Analyzing Circuit…' : 'Continue to Workspace'}</span>
+        {pending ? <Loader2 size={16} className="analysis-spinner" aria-hidden="true" /> : <ArrowRight size={16} aria-hidden="true" />}
+      </button>
+    </div>
+  );
 
-  const acceptedFormats = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+  const acceptedFormats = ['image/png', 'image/jpeg', 'image/webp'];
 
   const validateAndProcessFile = (file) => {
     setErrorMessage(null);
     if (!file) return;
 
     if (!acceptedFormats.includes(file.type)) {
+      onImageRemoved?.();
       setErrorMessage('Unsupported format. Please select a PNG, JPG, or WebP image.');
       return;
     }
 
     if (file.size > 10 * 1024 * 1024) {
+      onImageRemoved?.();
       setErrorMessage('File size exceeds the 10 MB limit.');
       return;
     }
@@ -57,9 +75,9 @@ export default function LandingPage({
   };
 
   const handleFileChange = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      validateAndProcessFile(e.target.files[0]);
-    }
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) validateAndProcessFile(file);
   };
 
   const handleTriggerBrowse = () => {
@@ -143,16 +161,7 @@ export default function LandingPage({
                 </button>
               </div>
 
-              <div className="landing-action-buttons">
-                <button
-                  type="button"
-                  onClick={onContinueToWorkspace}
-                  className="btn-continue-workspace"
-                >
-                  <span>Continue to workspace</span>
-                  <ArrowRight size={16} />
-                </button>
-              </div>
+              {actions}
 
               {/* Analysis results shown inline on the landing page */}
               {analysisState && analysisState.status !== 'idle' && (
@@ -163,37 +172,40 @@ export default function LandingPage({
             </div>
           ) : (
             /* Empty Drag & Drop Zone */
-            <div
-              className={`landing-dropzone ${dragActive ? 'dropzone-active' : ''}`}
-              onDragEnter={handleDrag}
-              onDragOver={handleDrag}
-              onDragLeave={handleDrag}
-              onDrop={handleDrop}
-              onClick={handleTriggerBrowse}
-              role="button"
-              tabIndex={0}
-              aria-label="Upload circuit image"
-            >
-              <div className="dropzone-icon-wrap">
-                <Upload size={32} className="dropzone-upload-icon" />
-              </div>
-              <h2 className="dropzone-main-text">Drop your circuit problem here</h2>
-              <p className="dropzone-sub-text">or click to browse files from your computer</p>
-              <span className="dropzone-badge-formats">Supports PNG, JPG, or WebP (up to 10 MB)</span>
+            <>
+              <div
+                className={`landing-dropzone ${dragActive ? 'dropzone-active' : ''}`}
+                onDragEnter={handleDrag}
+                onDragOver={handleDrag}
+                onDragLeave={handleDrag}
+                onDrop={handleDrop}
+                onClick={handleTriggerBrowse}
+                role="button"
+                tabIndex={0}
+                aria-label="Upload circuit image"
+              >
+                <div className="dropzone-icon-wrap">
+                  <Upload size={32} className="dropzone-upload-icon" />
+                </div>
+                <h2 className="dropzone-main-text">Drop your circuit problem here</h2>
+                <p className="dropzone-sub-text">or click to browse files from your computer</p>
+                <span className="dropzone-badge-formats">Supports PNG, JPG, or WebP (up to 10 MB)</span>
 
-              <div className="dropzone-action-row">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleTriggerBrowse();
-                  }}
-                  className="btn-browse-files"
-                >
-                  Browse files
-                </button>
+                <div className="dropzone-action-row">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleTriggerBrowse();
+                    }}
+                    className="btn-browse-files"
+                  >
+                    Browse files
+                  </button>
+                </div>
               </div>
-            </div>
+              {actions}
+            </>
           )}
 
           {errorMessage && (

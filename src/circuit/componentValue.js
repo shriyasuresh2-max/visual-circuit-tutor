@@ -10,6 +10,7 @@
 
 import { splitValue } from './electricalGraph.js';
 import { parseDcValue } from './electricalValue.js';
+import { displayNumber } from './electricalDisplay.js';
 
 /** Concise wording for a value whose unit could not be read. */
 export const UNREADABLE_UNIT_WARNING = 'Unit unreadable';
@@ -30,7 +31,8 @@ export function valueDisplay(component) {
       : electrical.status === 'invalid-value' || electrical.status === 'out-of-range' ? 'Invalid value'
       : null;
     return {
-      text: electrical.text ?? (warning ? '—' : null),
+      text: electrical.status === 'ok' && electrical.value === 0 ? `${displayNumber(electrical.value)} ${electrical.unit}`
+        : electrical.text ?? (warning ? '—' : null),
       unit: electrical.unit,
       warning,
       raw: warning ? electrical.raw : null,

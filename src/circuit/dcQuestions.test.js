@@ -34,12 +34,22 @@ describe('DC question interpretation', () => {
   });
 
   it('reports unsupported methods and out-of-scope questions', () => {
-    expect(parseDcQuestion('Find the current through R1 using mesh analysis')).toMatchObject({
+    expect(parseDcQuestion('Find the current through R1 using Laplace analysis')).toMatchObject({
       kind: 'unsupported', message: expect.stringContaining('method is unavailable'),
     });
     for (const text of ['What is the RC time constant?', 'Voltage across R1 after 2 seconds', 'Estimate the capacitance']) {
       expect(parseDcQuestion(text).kind).toBe('unsupported');
     }
+  });
+
+  it.each([
+    ['Solve using mesh analysis', 'general'],
+    ['Find mesh currents', 'mesh-currents'],
+    ['Explain supermesh analysis', 'supermesh'],
+    ['Find the current through R1 using mesh analysis', 'branch-current'],
+  ])('keeps the requested mesh method for %s', (question, kind) => {
+    expect(parseDcQuestion(question)).toMatchObject({ kind, method: 'mesh' });
+    expect(parseDcQuestion('Using nodal analysis, find branch currents using mesh analysis').kind).toBe('unsupported');
   });
 
   it('asks for clarification rather than selecting one of several named targets', () => {

@@ -839,6 +839,23 @@ function planComponents(graph, comps, plan, project, bounds) {
       const p1 = t1?.position ? project(t1.position) : null;
       const imageCentre = c.center ? project(c.center) : null;
 
+      if (c.type === 'ground') {
+        if (!t0) return;
+        const axis = p0 && imageCentre && dist(p0, imageCentre) > EPS
+          ? unitAxis(imageCentre.x - p0.x, imageCentre.y - p0.y) : { x: 0, y: 1 };
+        const halfSpan = p0 && imageCentre && dist(p0, imageCentre) > EPS ? dist(p0, imageCentre) : 22;
+        const anchor = p0 ?? pa ?? { x: bounds.width / 2, y: bounds.height / 2 };
+        const center = imageCentre ?? { x: anchor.x + axis.x * halfSpan, y: anchor.y + axis.y * halfSpan * (p0 ? 1 : 2) };
+        const ground = {
+          id: c.id, type: c.type, confidence: c.confidence, status: c.status,
+          center, axis, halfSpan, symbolHalf: 14, symbolPerp: 14, nodeA: na, nodeB: null,
+          terminals: [{ label: t0.label, node: na }], placedFromImage: Boolean(p0 || imageCentre),
+        };
+        refreshComponentGeometry(ground, bounds);
+        placed.push(ground);
+        return;
+      }
+
       // Geometry is decided per component, never for the circuit as a whole: a
       // neighbour without coordinates must not drag a placed component away
       // from where the image put it.
@@ -1090,10 +1107,9 @@ function refreshComponentGeometry(comp, bounds) {
   comp.y1 = Math.round(comp.center.y - comp.axis.y * comp.halfSpan);
   comp.x2 = Math.round(comp.center.x + comp.axis.x * comp.halfSpan);
   comp.y2 = Math.round(comp.center.y + comp.axis.y * comp.halfSpan);
-  comp.terminals = [
-    { ...comp.terminals[0], x: comp.x1, y: comp.y1 },
-    { ...comp.terminals[1], x: comp.x2, y: comp.y2 },
-  ];
+  comp.terminals = comp.terminals.map((terminal, index) => ({
+    ...terminal, x: index ? comp.x2 : comp.x1, y: index ? comp.y2 : comp.y1,
+  }));
   comp.symbolBox = componentBox(comp);
   comp.drawBox = componentDrawBox(comp);
 }
@@ -3014,7 +3030,7 @@ export function layoutSchematic(analysis, electricalGraph) {
 
   // Geometry is handled per component: coordinates are never thrown away
   // because some other component arrived without them.
-  const hasUsableGeometry = (c) => c.terminals.filter((t) => t.position).length >= 2 || Boolean(c.center);
+  const hasUsableGeometry = (c) => c.terminals.filter((t) => t.position).length >= (c.type === 'ground' ? 1 : 2) || Boolean(c.center);
   const withGeometry = comps.filter(hasUsableGeometry);
   const coverage = comps.length > 0 ? withGeometry.length / comps.length : 0;
   const geometry = {
