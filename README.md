@@ -1,22 +1,32 @@
 # Visual Circuit Tutor
 
-Visual Circuit Tutor turns uploaded circuit diagrams into editable SVG schematics and interactive lessons. It uses Google Gemini to read the image, then solves supported DC circuits with modified nodal analysis (MNA).
+Visual Circuit Tutor turns uploaded circuit diagrams into editable SVG schematics and interactive lessons. It uses Google Gemini to read the image, then explains supported DC circuits through five analysis methods.
 
 ## Features
 
 - Upload a PNG, JPEG, or WebP circuit image up to 5 MiB. Gemini extracts components, printed values, terminals, and connections.
 - Review the reconstructed schematic and its validation messages. The reconstruction distinguishes junctions from crossings and flags incomplete or disputed connections.
 - Adjust component values and schematic geometry. You can move components, junctions, and wire segments. Wire endpoint handles preview snap targets, and geometry edits preserve the electrical graph.
-- Solve ideal DC resistor networks with independent voltage sources. The solver calculates node voltages, voltage drops, and branch currents.
+- Solve ideal DC resistor networks with independent voltage and current sources. The solver calculates node voltages, voltage drops, and branch currents.
 - Ask a supported question, such as **What is the current through R2?** or **What is the power dissipated by R1?** Other supported requests include resistor voltage, current supplied by a named source, individual node voltages, all node voltages or branch currents, and general nodal analysis.
-- Follow a step-by-step lesson with KaTeX equations, circuit highlights, current-direction arrows, and animated conventional-current flow. Leave the question blank for the default nodal-analysis lesson. Reduced-motion preferences keep the static arrows and disable continuous animation.
+- Follow a step-by-step lesson with KaTeX equations, circuit highlights, current-direction arrows, and animated conventional-current flow. Nodal Analysis is the default method. Reduced-motion preferences keep the static arrows and disable continuous animation.
 
 ## How it works
 
 1. **Extract.** The React frontend sends the image to FastAPI at `POST /api/analyze-image`. The backend sends it to Gemini and returns structured circuit evidence.
 2. **Reconstruct.** The frontend reconciles that evidence into an electrical graph and lays it out as an SVG schematic. Connectivity comes from the graph, which keeps visual editing independent of electrical connections.
-3. **Solve.** Select **Continue to workspace**, review the circuit, and choose **Solve Circuit**. The JavaScript MNA solver uses the graph and component values to compute the numerical results. If a value is missing or unreadable, use **Edit component values** and solve again. Disputed or incomplete connectivity blocks solving.
-4. **Learn.** The tutor uses the verified solution to explain the reference node, Kirchhoff’s current law (KCL), voltage-source constraints, and the requested calculation. **Previous Step** and **Next Step** update the lesson and diagram together.
+3. **Solve.** Select **Continue to workspace**, review the circuit, and choose **Solve Circuit**. Choose an analysis method. The solver uses the circuit graph and component values to compute the result. If a value is missing or unreadable, use **Edit component values** and solve again. Disputed or incomplete connectivity blocks solving.
+4. **Learn.** Follow the selected method from its setup to the requested calculation. Change the method to study the same circuit from another perspective. **Previous Step** and **Next Step** update the lesson and diagram together.
+
+## Analysis methods
+
+| Method | What the lesson shows |
+| --- | --- |
+| Nodal Analysis | Reference and unknown node voltages, KCL equations, supernode constraints where applicable, and the requested calculation. |
+| Mesh Analysis | Mesh-current directions and loop equations, with supermesh and current-source constraints where applicable. Verified loop arrows link currents to the schematic. |
+| Series-Parallel Reduction | Valid series and parallel resistor combinations, equivalent resistance, and recovery of original circuit quantities where supported. |
+| Source Transformation | One step per valid voltage-source/series-resistor or current-source/parallel-resistor conversion, with verified before-and-after diagrams when available. The lesson follows with applicable reductions and can recover a quantity inside a transformed pair from the solved terminal voltage. |
+| Superposition | One step per independent source. Inactive voltage sources become shorts and inactive current sources become opens. The lesson adds signed contributions, checks the total against a direct nodal solve, and calculates power from the final voltage and current. |
 
 ## Tech stack
 
@@ -26,7 +36,7 @@ Visual Circuit Tutor turns uploaded circuit diagrams into editable SVG schematic
 | SVG | Schematic rendering and editing |
 | Python and FastAPI | Image upload and analysis API |
 | Google Gemini API | Image-based circuit extraction |
-| Modified nodal analysis (MNA) | Deterministic DC solving in JavaScript |
+| JavaScript DC solvers | Modified nodal analysis (MNA) and method-specific solvers and checks |
 | KaTeX | Mathematical notation in lessons |
 | Vitest and Python `unittest` | Frontend and backend regression tests |
 
@@ -116,7 +126,7 @@ Open `http://localhost:5173`, or the local URL printed by Vite. Keep the backend
 
 ## Tests and production build
 
-Run from the repository root. Regression tests use local fixtures and require no live Gemini request.
+Run from the repository root. Regression tests use local fixtures and require no live Gemini request. The latest implementation check passed 665 frontend tests, 8 backend tests, and the production build. The build reports a bundle-size warning.
 
 ```bash
 npm test
@@ -139,20 +149,20 @@ backend/.venv/bin/python -B -m unittest discover -s tests -v
 
 ## Current limitations
 
-- DC solving supports ideal resistors and independent voltage sources. Capacitor and RC solving are still planned.
+- DC solving covers ideal resistors and independent voltage and current sources. Capacitor and RC circuits are outside the current solver scope.
 - Question interpretation supports specific wording and component or node IDs. Use the labels shown on the schematic for targeted questions.
 - Gemini can misread values, terminals, and connections, especially in unclear images. Ambiguous values need confirmation, and unresolved connectivity blocks solving. The geometry editor can improve readability without changing connectivity.
-- Lessons currently teach nodal analysis. Mesh analysis and automatic series-parallel reduction lessons are planned.
+- Available lesson steps depend on the circuit topology and question. A reduction or transformation can yield a partial result. When a comparison or isolated-source diagram cannot be verified, the lesson provides the equations. Unsupported cases provide diagnostics.
 
 ## Planned improvements
 
 - Improve extraction for handwritten and complex diagrams.
 - Add a way to correct extracted electrical connectivity.
-- Expand supported question patterns and introduce mesh and series-parallel teaching methods.
+- Expand supported question patterns.
 - Extend the solver and lessons to capacitors and RC circuits.
 
 ## Educational purpose
 
-Visual Circuit Tutor helps students connect a circuit drawing to the equations that describe it. Students can see which components contribute to each KCL equation, follow how the solver uses component values, and relate a signed current result to its direction on the schematic.
+Visual Circuit Tutor helps students connect a circuit drawing to the equations that describe it. Students can follow how each method uses component values and circuit connections, then relate signed current results to directions on the schematic.
 
 Developed by [@shriyasuresh2-max](https://github.com/shriyasuresh2-max).
